@@ -2333,6 +2333,10 @@ session_prepare() {
     session_adopt_runner "$ws"
     session_adopt_display "$ws"
     PROTON_VERB="run"
+    # Proton runs a program's fixes (protonfixes) only for waitforexitandrun,
+    # which would first wait for the session to end; WE-Proton also runs them
+    # for this run when asked to
+    SESSION_ENV+=("PROTONFIXES_RUN_VERB=1")
     SESSION_SETTLE=""
   elif [[ -z "$keeper" && $want_netns -eq 1 ]]; then
     session_start "$dir"
