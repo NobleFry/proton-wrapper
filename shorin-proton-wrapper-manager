@@ -129,6 +129,7 @@ TEXT = {
     "no_matches": "没有匹配的结果。" if ZH else "No matches.",
     "target_missing": "目标不存在" if ZH else "Target missing",
     "local_runners": "本地" if ZH else "local",
+    "run_via_steam": "通过 Steam 启动" if ZH else "Start through Steam",
 }
 
 
@@ -805,6 +806,7 @@ def app_cache_entry(prefix: Path, app: dict[str, str]) -> dict[str, str]:
         "mangohud": app.get("mangohud", "0"),
         "wayland": app.get("wayland", "0"),
         "env_vars": app.get("env_vars", ""),
+        "steam_appid": app.get("steam_appid", ""),
         "source": app.get("source", "configured"),
         "name": app_display_name(app),
     }
@@ -1593,6 +1595,7 @@ def scan_apps(prefix: Path) -> list[dict[str, str]]:
             "mangohud": entry.get("mangohud", "0"),
             "wayland": entry.get("wayland", "0"),
             "env_vars": entry.get("env_vars", ""),
+            "steam_appid": entry.get("steam_appid", ""),
             "kind": "saved-config",
             "last_used": app_last_used(prefix, exe_path),
         })
@@ -1943,6 +1946,9 @@ def write_cache_entry(entry: dict[str, str]) -> None:
         "name", "exe", "prefix", "runner", "gamescope", "gamescope_fullscreen", "gamescope_res",
         "gamescope_fps", "gamescope_fsr", "gamescope_args", "mangohud", "wayland", "env_vars", "source",
     ]
+    # a game the wrapper saw Steam start, which the manager starts through Steam
+    if entry.get("steam_appid"):
+        keys.insert(keys.index("source"), "steam_appid")
     path.write_text(
         "".join(f"{key}={quote(entry.get(key, '')) if key == 'env_vars' else entry.get(key, '')}\n" for key in keys),
         encoding="utf-8",
@@ -2796,11 +2802,14 @@ class ManagerApp(Gtk.Application):
             log_path = Path(str(running_app.get("log", ""))) if running_app and running_app.get("log") else latest_log_for_app(app_id)
             location = app_location(prefix, app)
             missing = app.get("missing") == "1"
-            row = SearchRow(app_display_name(app), app.get("name", ""), location, app["path"])
+            steam_appid = app.get("steam_appid", "")
+            detail = f'{TEXT["target_missing"]} · {location}' if missing else location
+            if steam_appid:
+                detail = f"Steam · {detail}"
+            row = SearchRow(app_display_name(app), app.get("name", ""), detail, app["path"])
             box = self.row_box()
             box.append(self.app_icon_widget(prefix, app))
-            box.append(self.text_column(app_display_name(app),
-                                        f'{TEXT["target_missing"]} · {location}' if missing else location,
+            box.append(self.text_column(app_display_name(app), detail,
                                         tooltip=app["path"], dim=missing or app_is_uninstaller(app)))
             log_button = self.compact_button(TEXT["log"])
             log_button.set_sensitive(bool(log_path and log_path.exists()))
@@ -2812,7 +2821,13 @@ class ManagerApp(Gtk.Application):
                 box.append(close)
             else:
                 run = self.compact_button(TEXT["run"], "run-button")
-                run.connect("clicked", lambda _b, item=app, item_prefix=prefix: self.run_path(item["path"], str(item_prefix), item.get("runner", "")))
+                if steam_appid:
+                    # Steam signs the game in and passes its launch options,
+                    # which bring it back to the wrapper
+                    run.set_tooltip_text(TEXT["run_via_steam"])
+                    run.connect("clicked", lambda _b, appid=steam_appid: self.run_steam_game(appid))
+                else:
+                    run.connect("clicked", lambda _b, item=app, item_prefix=prefix: self.run_path(item["path"], str(item_prefix), item.get("runner", "")))
                 box.append(run)
             if app.get("kind") in ("saved-config", "shortcut"):
                 config = self.compact_button(TEXT["reconfigure"])
@@ -2918,6 +2933,11 @@ class ManagerApp(Gtk.Application):
         command.append(path)
         subprocess.Popen(command)
         self.set_status(f"{TEXT['run']}: {path}")
+        GLib.timeout_add(800, self.refresh_apps_once)
+
+    def run_steam_game(self, appid: str) -> None:
+        subprocess.Popen(["xdg-open", f"steam://rungameid/{appid}"])
+        self.set_status(f"{TEXT['run_via_steam']}: {appid}")
         GLib.timeout_add(800, self.refresh_apps_once)
 
     def refresh_apps_once(self) -> bool:

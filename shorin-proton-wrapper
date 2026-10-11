@@ -2553,7 +2553,19 @@ record_default_association() {
   esac
   should_record_association "$target_path" || return 0
   cache_file="$(association_cache_file_for "$target_path")"
-  [[ -e "$cache_file" ]] && return 0
+  if [[ ! -e "$cache_file" ]]; then
+    record_new_association "$target_path" "$cache_file"
+  fi
+  # a game Steam starts: the manager starts it through Steam too
+  if [[ $STEAM_LAUNCH -eq 1 && "${SteamAppId:-}" =~ ^[1-9][0-9]*$ ]] \
+      && ! grep -qx "steam_appid=$SteamAppId" "$cache_file"; then
+    sed -i '/^steam_appid=/d' "$cache_file"
+    printf 'steam_appid=%s\n' "$SteamAppId" >> "$cache_file"
+  fi
+}
+
+record_new_association() {
+  local target_path="$1" cache_file="$2"
   mkdir -p "$(dirname "$cache_file")"
   cat > "$cache_file" <<EOF
 exe=$target_path

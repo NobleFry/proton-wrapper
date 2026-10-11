@@ -419,12 +419,15 @@ def read_cache(path: Path):
 
 
 def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
-    # keep the name the manager shows, which may have been renamed
-    name = ""
+    # keep the name the manager shows, which may have been renamed, and the
+    # Steam game it is, through which the manager starts it
+    name = steam_appid = ""
     if path.is_file():
         for line in path.read_text(errors="ignore").splitlines():
             if line.startswith("name="):
                 name = line.split("=", 1)[1]
+            elif line.startswith("steam_appid="):
+                steam_appid = line.split("=", 1)[1]
     path.write_text(
         (f"name={name}\n" if name else "")
         + f"exe={exe}\n"
@@ -439,7 +442,8 @@ def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
         f"mangohud={options.get('mangohud', '0')}\n"
         f"wayland={options.get('wayland', '0')}\n"
         f"env_vars={quote(options.get('env_vars', ''))}\n"
-        "source=configured\n"
+        + (f"steam_appid={steam_appid}\n" if steam_appid else "")
+        + "source=configured\n"
     )
 
 
