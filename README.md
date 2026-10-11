@@ -58,6 +58,22 @@ Proton 会放进它要求的 Steam Linux Runtime 容器里运行（WE-Proton、D
 - 开关在这个前置环境的程序全部关闭后生效；
 - 程序看到的网卡和用户与平时不同，带反作弊的游戏请谨慎使用。
 
+## Steam 游戏
+
+在 Steam 里把游戏的启动选项设为：
+
+```
+shorin-proton-wrapper %command%
+```
+
+游戏就不再用 Steam 给它建的前置环境，而是作为 `~/.proton` 里的程序运行（另一个前置环境用 `shorin-proton-wrapper -p 前置环境 %command%`）：和那里的其他程序共用一个会话、运行器和独立网络，比如让加速器接管 Steam 游戏。
+
+- 游戏的「兼容性」里仍要选一个 Proton（建议 WE-Proton Latest），否则 Steam 不会启动 Windows 游戏；实际运行用的是前置环境的运行器；
+- 游戏安装目录分配一个盘符，游戏按 Steam 启动时的工作目录运行；
+- 存在 Windows 用户目录（AppData、文档）里的存档会在 `~/.proton` 里。Steam 云存档同步的是 Steam 自己的前置环境（`steamapps/compatdata/<AppID>`），这类存档不会跟着同步，已有的存档需要自己复制过来；
+- 带反作弊的游戏多半不行；
+- 游戏会出现在管理器的应用列表里，但需要 Steam 的游戏请从 Steam 启动。
+
 ## Shorin Proton Wrapper 管理器
 
 >`shorin-proton-wrapper-manager`

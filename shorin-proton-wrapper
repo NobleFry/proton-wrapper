@@ -43,6 +43,8 @@ INSTALL_TO="default"
 CLEAN=0
 TARGET=""
 TARGET_ARGS=()
+# 1 when the target came from a Steam launch option, see take_steam_command
+STEAM_LAUNCH=0
 LANG_OVERRIDE="${PROTON_LANG:-}"
 GAMESCOPE=0
 GAMESCOPE_FULLSCREEN=1
@@ -1970,13 +1972,18 @@ build_launch_command() {
   if [[ "$type" == "proton" ]]; then
     prepare_runtime "$runner" "${1:-run}"
     mkdir -p "$PREFIX"
+    # Proton looks up a game's fixes by UMU_ID before SteamAppId; a Steam
+    # game is left to be found by its app ID, as when Steam runs it
+    umu_env=()
+    if [[ $STEAM_LAUNCH -eq 0 ]]; then
+      umu_env=(UMU_ID="${UMU_ID:-shorin-proton-wrapper}" UMU_USE_STEAM="${UMU_USE_STEAM:-0}")
+    fi
     LAUNCH_CMD+=(env "${env_args[@]}"
       STEAM_COMPAT_DATA_PATH="$PREFIX"
       STEAM_COMPAT_CLIENT_INSTALL_PATH="$(steam_root_dir)"
       SteamAppId="${SteamAppId:-0}"
       SteamGameId="${SteamGameId:-0}"
-      UMU_ID="${UMU_ID:-shorin-proton-wrapper}"
-      UMU_USE_STEAM="${UMU_USE_STEAM:-0}"
+      "${umu_env[@]}"
       "${RUNTIME_PREFIX[@]}" "$runner" "$@")
   else
     mkdir -p "$PREFIX/pfx"
@@ -2666,6 +2673,38 @@ drive_map_set() {
   mv "$tmp" "$map"
 }
 
+drive_map_remove() {
+  local map tmp
+  map="$(drive_map_file)"
+  [[ -r "$map" ]] || return 0
+  tmp="$map.tmp.$$"
+  awk -F '\t' -v letter="$1" '$1 != letter' "$map" > "$tmp"
+  mv "$tmp" "$map"
+}
+
+# Drop our letters for folders inside root. Wine names a path by the deepest
+# drive it is on, so such a letter would take a program out of root's drive:
+# a launcher in it would no longer find the game it starts in the folder above.
+drive_map_drop_inside() {
+  local root="$1" letter folder _
+  while IFS=$'\t' read -r letter folder _; do
+    [[ " $DRIVE_LETTERS " == *" $letter "* && "$folder" == "$root/"* ]] || continue
+    if [[ "$(realpath -m "$PREFIX/pfx/dosdevices/$letter:")" == "$folder" ]]; then
+      rm -f "$PREFIX/pfx/dosdevices/$letter:"
+    fi
+    drive_map_remove "$letter"
+  done < <(cat "$(drive_map_file)" 2> /dev/null || true)
+}
+
+# The install folder of the Steam game a program is part of, if any: it is
+# one drive for the game however the game is started.
+steam_install_folder() {
+  local path="$1" rest
+  [[ "$path" == */steamapps/common/*/* ]] || return 1
+  rest="${path#*/steamapps/common/}"
+  printf '%s/steamapps/common/%s\n' "${path%%/steamapps/common/*}" "${rest%%/*}"
+}
+
 # The single letter used before every folder got its own.
 migrate_drive_marker() {
   local marker="$PREFIX/.shorin-proton-wrapper-drive" letter link
@@ -2719,8 +2758,10 @@ drive_letter_for() {
   printf '%s\n' "$victim"
 }
 
+# A program outside the prefix gets a drive letter for its folder, or for
+# root, a folder above it: a game in Binaries/Win64 reaches its data by ..\..
 prepare_mapped_drive_target() {
-  local target_path="$1" source_dir base letter
+  local target_path="$1" root="${2:-}" source_dir base letter
   target_path="$(realpath -m "$target_path")"
   source_dir="$(dirname "$target_path")"
   base="$(basename "$target_path")"
@@ -2736,13 +2777,54 @@ prepare_mapped_drive_target() {
 
   mkdir -p "$PREFIX/pfx/dosdevices"
   migrate_drive_marker
+  if [[ -n "$root" ]]; then
+    root="$(realpath -m "$root")"
+    if [[ "$target_path" == "$root/"* ]]; then
+      source_dir="$root"
+      base="${target_path#"$root/"}"
+      base="${base//\//\\}"
+      drive_map_drop_inside "$root"
+    fi
+  fi
   letter="$(drive_letter_for "$source_dir")" || die "no free Wine drive letter found for: $source_dir"
   workdir="$PREFIX/pfx/drive_c"
   exe="${letter}:\\$base"
 }
 
+# Steam's %command% for a game it runs with Proton: its launch helpers and
+# runtime, the proton script with a verb, then the game and its arguments.
+# With "shorin-proton-wrapper %command%" as a game's launch option, the game
+# alone runs, the way any program does here: in the wrapper's prefix and its
+# session, so it shares them with what else runs there, an accelerator say.
+take_steam_command() {
+  local args=("$TARGET" "${TARGET_ARGS[@]}") i
+  for ((i = 0; i + 2 < ${#args[@]}; i++)); do
+    [[ "$(basename -- "${args[i]}")" == "proton" ]] || continue
+    case "${args[i + 1]}" in
+      waitforexitandrun|run|runinprefix) ;;
+      *) continue ;;
+    esac
+    TARGET="${args[i + 2]}"
+    TARGET_ARGS=("${args[@]:i + 3}")
+    STEAM_LAUNCH=1
+    # Steam hands its launch option the libraries of its own runtime; the
+    # programs the wrapper runs on the host want the system's
+    [[ -v SYSTEM_LD_LIBRARY_PATH ]] && export LD_LIBRARY_PATH="$SYSTEM_LD_LIBRARY_PATH"
+    [[ -v SYSTEM_PATH ]] && export PATH="$SYSTEM_PATH"
+    return 0
+  done
+  return 1
+}
+
 run_target() {
-  local workdir exe proton_exe status
+  local workdir exe proton_exe status steam_dir
+  case "${TARGET,,}" in
+    *.exe|*.lnk|*.msi|*.bat|*.cmd|*.com) ;;
+    *)
+      steam_dir="$PWD"
+      take_steam_command || true
+      ;;
+  esac
   TARGET="$(expand_path "$TARGET")"
   [[ -e "$TARGET" ]] || die_visible "target not found: $TARGET"
   apply_cached_association "$TARGET"
@@ -2764,7 +2846,14 @@ run_target() {
       fi
       ;;
     *)
-      prepare_mapped_drive_target "$TARGET"
+      # a Steam game sees its install folder as one drive, and when Steam
+      # starts it, starts in the folder Steam starts it in
+      if [[ $STEAM_LAUNCH -eq 1 ]]; then
+        prepare_mapped_drive_target "$TARGET" "${STEAM_COMPAT_INSTALL_PATH:-$(steam_install_folder "$TARGET" || true)}"
+        workdir="$steam_dir"
+      else
+        prepare_mapped_drive_target "$TARGET" "$(steam_install_folder "$TARGET" || true)"
+      fi
       cd "$workdir"
       if [[ "$RESOLVED_RUNNER_TYPE" == "proton" ]]; then
         build_launch_command proton "$RESOLVED_RUNNER_PATH" "$PROTON_VERB" "$proton_exe" "${TARGET_ARGS[@]}"
