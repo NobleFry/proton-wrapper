@@ -2,6 +2,8 @@
 import hashlib
 import locale
 import os
+import queue
+import re
 import signal
 import shutil
 import struct
@@ -121,6 +123,12 @@ TEXT = {
     "other_exes": "其他可执行文件" if ZH else "Other Executables",
     "exe_count": "{count} 个 exe" if ZH else "{count} exe files",
     "linked_apps": "已关联应用 {count} 个" if ZH else "{count} linked apps",
+    "search_apps": "搜索应用（Ctrl+F）" if ZH else "Search apps (Ctrl+F)",
+    "search_dirs": "搜索目录（Ctrl+F）" if ZH else "Search folders (Ctrl+F)",
+    "search_processes": "搜索进程名、PID 或命令行（Ctrl+F）" if ZH else "Search name, PID or command line (Ctrl+F)",
+    "no_matches": "没有匹配的结果。" if ZH else "No matches.",
+    "target_missing": "目标不存在" if ZH else "Target missing",
+    "local_runners": "本地" if ZH else "local",
 }
 
 
@@ -521,15 +529,25 @@ def version_like(value: str) -> bool:
     return len(parts) > 1 and all(part.isdigit() for part in parts if part)
 
 
+def wine_user_dirs(drive_c: Path) -> list[Path]:
+    """The Windows user folders of a prefix. Proton names its user steamuser,
+    Wine takes the Linux user's name."""
+    users = drive_c / "users"
+    try:
+        names = sorted(child.name for child in users.iterdir() if child.is_dir())
+    except OSError:
+        return []
+    preferred = [name for name in ("steamuser", os.environ.get("USER", "")) if name in names]
+    return [users / name for name in preferred + [name for name in names if name not in preferred]
+            if name.lower() != "public"]
+
+
 def windows_install_roots(prefix: Path) -> list[Path]:
     pfx = prefix / "pfx" / "drive_c"
-    user = os.environ.get("USER", "")
-    return [
-        pfx / "Program Files",
-        pfx / "Program Files (x86)",
-        pfx / "users" / user / "AppData" / "Local",
-        pfx / "users" / user / "AppData" / "Roaming",
-    ]
+    roots = [pfx / "Program Files", pfx / "Program Files (x86)"]
+    for user in wine_user_dirs(pfx):
+        roots += [user / "AppData" / "Local", user / "AppData" / "Roaming"]
+    return roots
 
 
 IGNORED_INSTALL_DIR_NAMES = {
@@ -827,6 +845,27 @@ def icon_candidates_near(path: Path) -> list[Path]:
     return candidates
 
 
+def ansi_codepage() -> str:
+    """The code page of a shortcut's ANSI strings. Wine picks it from the
+    locale, as Windows does from the system language."""
+    value = (os.environ.get("LC_ALL") or os.environ.get("LC_CTYPE") or os.environ.get("LANG") or "").lower()
+    for lang, codepage in (("zh_tw", "cp950"), ("zh_hk", "cp950"), ("zh", "gbk"), ("ja", "cp932"), ("ko", "cp949")):
+        if value.startswith(lang):
+            return codepage
+    return "cp1252"
+
+
+def decode_ansi(raw: bytes) -> str:
+    return raw.decode(ansi_codepage(), errors="replace")
+
+
+def read_utf16_cstring(data: bytes, offset: int) -> str:
+    end = offset
+    while end + 1 < len(data) and data[end:end + 2] != b"\0\0":
+        end += 2
+    return data[offset:end].decode("utf-16le", errors="ignore")
+
+
 def read_lnk_string(data: bytes, offset: int, unicode: bool) -> tuple[str, int]:
     if offset + 2 > len(data):
         return "", offset
@@ -837,7 +876,59 @@ def read_lnk_string(data: bytes, offset: int, unicode: bool) -> tuple[str, int]:
         raw = data[offset:offset + size]
         return raw.decode("utf-16le", errors="ignore").rstrip("\0"), offset + size
     raw = data[offset:offset + length]
-    return raw.decode("mbcs" if os.name == "nt" else "latin-1", errors="ignore").rstrip("\0"), offset + length
+    return decode_ansi(raw).rstrip("\0"), offset + length
+
+
+def join_lnk_path(base: str, suffix: str) -> str:
+    if suffix and base and not base.lower().endswith(suffix.lower()):
+        return base.rstrip("\\/") + "\\" + suffix.lstrip("\\/")
+    return base
+
+
+def lnk_item_long_name(item: bytes) -> str:
+    """The unicode name a file item keeps in its extension block: the last
+    string there, just before the offset the item ends with."""
+    if len(item) < 20:
+        return ""
+    start = struct.unpack_from("<H", item, len(item) - 2)[0]
+    if not 14 <= start < len(item) - 4 or start + struct.unpack_from("<H", item, start)[0] != len(item):
+        return ""
+    end = len(item) - 4
+    if item[end:end + 2] != b"\0\0":
+        return ""
+    begin = end
+    while begin - 2 >= start + 8 and item[begin - 2:begin] != b"\0\0":
+        begin -= 2
+    return item[begin:end].decode("utf-16le", errors="ignore")
+
+
+def parse_lnk_id_list(id_list: bytes) -> str:
+    """The target as the shell item ID list spells it: a drive, then each
+    folder and the file by their unicode names."""
+    parts: list[str] = []
+    offset = 0
+    while offset + 3 <= len(id_list):
+        size = struct.unpack_from("<H", id_list, offset)[0]
+        if size < 3 or offset + size > len(id_list):
+            break
+        item = id_list[offset:offset + size]
+        offset += size
+        kind = item[2] & 0x70
+        if kind == 0x10 and not parts:  # My Computer
+            continue
+        if kind == 0x20 and not parts:  # a drive, "C:\"
+            parts.append(item[3:].split(b"\0", 1)[0].decode("ascii", errors="ignore").rstrip("\\"))
+        elif kind == 0x30 and parts:  # a folder or a file
+            name = lnk_item_long_name(item) or decode_ansi(item[14:].split(b"\0", 1)[0])
+            if not name:
+                return ""
+            parts.append(name)
+        else:
+            return ""
+    return "\\".join(parts) if len(parts) > 1 else ""
+
+
+LNK_STRINGS = ((0x04, "comment"), (0x08, "relative_path"), (0x10, "workdir"), (0x20, "args"), (0x40, "icon"))
 
 
 def parse_lnk(path: Path) -> dict[str, str]:
@@ -850,12 +941,15 @@ def parse_lnk(path: Path) -> dict[str, str]:
     flags = struct.unpack_from("<I", data, 0x14)[0]
     is_unicode = bool(flags & 0x80)
     offset = 0x4C
-    result = {}
+    result = {"icon_index": str(struct.unpack_from("<i", data, 0x38)[0])}
+    id_list = b""
+    ansi_target = unicode_target = ""
 
     if flags & 0x01:
         if offset + 2 > len(data):
             return result
         id_list_size = struct.unpack_from("<H", data, offset)[0]
+        id_list = data[offset + 2:offset + 2 + id_list_size]
         offset += 2 + id_list_size
 
     if flags & 0x02:
@@ -868,34 +962,41 @@ def parse_lnk(path: Path) -> dict[str, str]:
                 header_size = struct.unpack_from("<I", link_info, 4)[0]
                 local_base_offset = struct.unpack_from("<I", link_info, 16)[0]
                 suffix_offset = struct.unpack_from("<I", link_info, 24)[0]
-                local_base = ""
-                suffix = ""
+                local_base = suffix = b""
                 if local_base_offset and local_base_offset < len(link_info):
-                    local_base = link_info[local_base_offset:].split(b"\0", 1)[0].decode("mbcs" if os.name == "nt" else "latin-1", errors="ignore")
+                    local_base = link_info[local_base_offset:].split(b"\0", 1)[0]
                 if suffix_offset and suffix_offset < len(link_info):
-                    suffix = link_info[suffix_offset:].split(b"\0", 1)[0].decode("mbcs" if os.name == "nt" else "latin-1", errors="ignore")
+                    suffix = link_info[suffix_offset:].split(b"\0", 1)[0]
+                # latin-1 keeps the bytes as they are, to be decoded below
+                ansi_target = join_lnk_path(local_base.decode("latin-1"), suffix.decode("latin-1"))
                 if header_size >= 0x24 and len(link_info) >= 0x24:
                     local_base_unicode_offset = struct.unpack_from("<I", link_info, 28)[0]
                     suffix_unicode_offset = struct.unpack_from("<I", link_info, 32)[0]
+                    unicode_base = unicode_suffix = ""
                     if local_base_unicode_offset and local_base_unicode_offset < len(link_info):
-                        local_base = link_info[local_base_unicode_offset:].split(b"\0\0", 1)[0].decode("utf-16le", errors="ignore")
+                        unicode_base = read_utf16_cstring(link_info, local_base_unicode_offset)
                     if suffix_unicode_offset and suffix_unicode_offset < len(link_info):
-                        suffix = link_info[suffix_unicode_offset:].split(b"\0\0", 1)[0].decode("utf-16le", errors="ignore")
-                target = local_base
-                if suffix and local_base and not local_base.lower().endswith(suffix.lower()):
-                    target = local_base.rstrip("\\/") + "\\" + suffix.lstrip("\\/")
-                if target:
-                    result["target"] = target
-            except (struct.error, UnicodeError):
+                        unicode_suffix = read_utf16_cstring(link_info, suffix_unicode_offset)
+                    unicode_target = join_lnk_path(unicode_base, unicode_suffix)
+            except struct.error:
                 pass
         offset += link_info_size
 
-    for flag in (0x04, 0x08, 0x10, 0x20, 0x40):
+    # Wine writes the path of the link info in the ANSI code page only, which
+    # need not be the locale's; the ID list has every name in unicode.
+    if unicode_target or (ansi_target and ansi_target.isascii()):
+        target = unicode_target or ansi_target
+    else:
+        target = parse_lnk_id_list(id_list) or decode_ansi(ansi_target.encode("latin-1"))
+    if target:
+        result["target"] = target
+
+    for flag, key in LNK_STRINGS:
         if not flags & flag:
             continue
         value, offset = read_lnk_string(data, offset, is_unicode)
-        if flag == 0x40:
-            result["icon"] = value
+        if value:
+            result[key] = value
     return result
 
 
@@ -907,27 +1008,53 @@ def parse_lnk_target(path: Path) -> str:
     return parse_lnk(path).get("target", "")
 
 
+def path_on_disk(path: Path) -> Path:
+    """The path as the disk spells it: Windows ignores case, so a shortcut may
+    spell a folder differently than it was created."""
+    if path.exists():
+        return path
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        candidate = current / part
+        if not candidate.exists():
+            lower = part.lower()
+            try:
+                candidate = next(child for child in current.iterdir() if child.name.lower() == lower)
+            except (OSError, StopIteration):
+                return path
+        current = candidate
+    return current
+
+
 def windows_path_to_linux(prefix: Path, value: str) -> Path | None:
     value = value.strip().strip('"')
     if not value:
         return None
+    drive_c = prefix / "pfx" / "drive_c"
+    users = wine_user_dirs(drive_c)
+    profile = f"C:\\users\\{users[0].name if users else 'steamuser'}"
     env_map = {
-        "%SystemRoot%": "C:\\windows",
-        "%windir%": "C:\\windows",
-        "%ProgramFiles%": "C:\\Program Files",
-        "%ProgramFiles(x86)%": "C:\\Program Files (x86)",
-        "%ProgramData%": "C:\\ProgramData",
-        "%USERPROFILE%": f"C:\\users\\{os.environ.get('USER', '')}",
+        "systemroot": "C:\\windows",
+        "windir": "C:\\windows",
+        "systemdrive": "C:",
+        "programfiles": "C:\\Program Files",
+        "programfiles(x86)": "C:\\Program Files (x86)",
+        "programw6432": "C:\\Program Files",
+        "programdata": "C:\\ProgramData",
+        "allusersprofile": "C:\\ProgramData",
+        "public": "C:\\users\\Public",
+        "userprofile": profile,
+        "appdata": profile + "\\AppData\\Roaming",
+        "localappdata": profile + "\\AppData\\Local",
     }
-    for key, replacement in env_map.items():
-        value = value.replace(key, replacement)
+    value = re.sub(r"%([^%]+)%", lambda match: env_map.get(match.group(1).lower(), match.group(0)), value)
     value = value.replace("/", "\\")
     if len(value) >= 3 and value[1] == ":" and value[2] == "\\":
         drive = value[0].lower()
         rest = value[3:].replace("\\", "/")
         if drive == "c":
-            return prefix / "pfx" / "drive_c" / rest
-        return prefix / "pfx" / "dosdevices" / f"{drive}:" / rest
+            return path_on_disk(drive_c / rest)
+        return path_on_disk(prefix / "pfx" / "dosdevices" / f"{drive}:" / rest)
     candidate = Path(value).expanduser()
     if candidate.is_absolute():
         return candidate
@@ -967,14 +1094,16 @@ def convert_icon_to_png(source: Path, target: Path) -> bool:
         return False
 
 
-def extract_exe_icon_to_png(source: Path, target: Path) -> bool:
+def extract_exe_icon_to_png(source: Path, target: Path, icon_index: int = 0) -> bool:
     icoextract = shutil_which("icoextract")
     if not icoextract:
         return False
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(".ico.tmp")
+    # as with Windows, a negative index is the icon's resource ID
+    select = ["-n", str(icon_index)] if icon_index > 0 else ["-i", str(-icon_index)] if icon_index < 0 else []
     try:
-        result = subprocess.run([icoextract, str(source), str(tmp)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run([icoextract, *select, str(source), str(tmp)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         return False
     if result.returncode != 0 or not tmp.is_file() or tmp.stat().st_size == 0:
@@ -985,9 +1114,10 @@ def extract_exe_icon_to_png(source: Path, target: Path) -> bool:
     return ok
 
 
-def extracted_icon_path(prefix: Path, source: Path, app_name: str, target_dir: Path | None = None) -> Path | None:
+def extracted_icon_path(prefix: Path, source: Path, app_name: str, target_dir: Path | None = None,
+                        icon_index: int = 0) -> Path | None:
     target_dir = target_dir or gui_icon_dir()
-    key = icon_cache_key(source)
+    key = icon_cache_key(source, str(icon_index) if icon_index else "")
     target = target_dir / f"{safe_filename(app_name)}-{key}.png"
     if target.is_file() and target.stat().st_size > 0:
         return target
@@ -995,7 +1125,7 @@ def extracted_icon_path(prefix: Path, source: Path, app_name: str, target_dir: P
         return target if convert_icon_to_png(source, target) else None
     if source.suffix.lower() not in (".exe", ".dll", ".icl") or not source.is_file():
         return None
-    if extract_exe_icon_to_png(source, target):
+    if extract_exe_icon_to_png(source, target, icon_index):
         return target
     wrestool = shutil_which("wrestool")
     if not wrestool:
@@ -1030,7 +1160,8 @@ def search_icon_tree(root: Path, app_name: str, limit: int = 3000) -> Path | Non
             name = normalize_icon_name(icon.stem)
             if name == wanted:
                 return icon
-            if wanted in name or name in wanted:
+            # a name of one character, or none, is part of every other name
+            if len(name) > 1 and (wanted in name or name in wanted):
                 best = best or icon
     return best
 
@@ -1038,14 +1169,21 @@ def search_icon_tree(root: Path, app_name: str, limit: int = 3000) -> Path | Non
 def icon_for_app(prefix: Path, app: dict[str, str], target_dir: Path | None = None) -> str:
     path = Path(app["path"])
     if path.suffix.lower() == ".lnk":
-        icon_location = parse_lnk_icon_location(path)
-        icon_source = windows_path_to_linux(prefix, icon_location) if icon_location else None
+        info = parse_lnk(path)
+        icon_source = windows_path_to_linux(prefix, info["icon"]) if info.get("icon") else None
         if icon_source:
-            extracted = extracted_icon_path(prefix, icon_source, app["name"], target_dir)
+            try:
+                icon_index = int(info.get("icon_index", "0"))
+            except ValueError:
+                icon_index = 0
+            extracted = extracted_icon_path(prefix, icon_source, app["name"], target_dir, icon_index)
             if extracted:
                 return str(extracted)
-        target_location = app.get("target_exe") or parse_lnk_target(path)
-        target_source = windows_path_to_linux(prefix, target_location) if target_location else None
+        # target_exe is already a Linux path
+        if app.get("target_exe"):
+            target_source = Path(app["target_exe"])
+        else:
+            target_source = windows_path_to_linux(prefix, info["target"]) if info.get("target") else None
         if target_source:
             extracted = extracted_icon_path(prefix, target_source, app["name"], target_dir)
             if extracted:
@@ -1334,17 +1472,55 @@ menubutton.compact-button > button:hover {
 
 
 def shortcut_roots(prefix: Path) -> list[tuple[str, Path]]:
+    """Where installers put shortcuts, the start menus first: of two
+    shortcuts to the same program, the first found is the one listed."""
     pfx = prefix / "pfx" / "drive_c"
-    return [
-        ("Desktop", pfx / "users" / os.environ.get("USER", "") / "Desktop"),
-        ("Start Menu", pfx / "users" / os.environ.get("USER", "") / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs"),
-        ("All Users", pfx / "ProgramData/Microsoft/Windows/Start Menu/Programs"),
-    ]
+    users = wine_user_dirs(pfx)
+    return (
+        [("Start Menu", user / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs") for user in users]
+        + [("All Users", pfx / "ProgramData/Microsoft/Windows/Start Menu/Programs")]
+        + [("Desktop", user / "Desktop") for user in users]
+        + [("Public Desktop", pfx / "users/Public/Desktop")]
+    )
+
+
+UNINSTALLER_WORDS = ("unins", "卸载")
+
+
+def app_is_uninstaller(app: dict[str, str]) -> bool:
+    names = (app.get("name", ""), app_display_name(app), Path(app.get("target_exe") or app.get("path", "")).stem)
+    return any(word in name.lower() for name in names for word in UNINSTALLER_WORDS)
+
+
+def collation_key(text: str) -> str:
+    """Sorts names as the locale does, Chinese ones by pinyin."""
+    try:
+        return locale.strxfrm(text.casefold())
+    except (OSError, ValueError):
+        return text.casefold()
+
+
+def app_last_used(prefix: Path, path: str | Path) -> float:
+    """When the app was last started. Each start empties its log folder and
+    creates the log anew, which dates the folder; what the program writes
+    into the log later leaves the folder's date as it is."""
+    try:
+        return app_log_dir(app_identity(prefix, Path(path))).stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def app_sort_key(app: dict) -> tuple:
+    """Programs first, the most recently used at the top and those never
+    used by name; then uninstallers, and last the shortcuts whose program is
+    gone."""
+    return (app.get("missing") == "1", app_is_uninstaller(app), -app.get("last_used", 0.0),
+            app.get("kind") != "shortcut", collation_key(app_display_name(app)))
 
 
 def scan_apps(prefix: Path) -> list[dict[str, str]]:
     prefix = expand_path(prefix)
-    apps = []
+    shortcuts: dict[str, dict[str, str]] = {}
     seen = set()
     shortcut_targets = set()
     for source, root in shortcut_roots(prefix):
@@ -1355,8 +1531,8 @@ def scan_apps(prefix: Path) -> list[dict[str, str]]:
             if real in seen:
                 continue
             seen.add(real)
-            target = parse_lnk_target(lnk)
-            target_path = windows_path_to_linux(prefix, target) if target else None
+            info = parse_lnk(lnk)
+            target_path = windows_path_to_linux(prefix, info["target"]) if info.get("target") else None
             if target_path:
                 shortcut_targets.add(str(target_path.resolve(strict=False)))
             shortcut_cache = read_key_values(cache_file_for_path(lnk))
@@ -1366,11 +1542,27 @@ def scan_apps(prefix: Path) -> list[dict[str, str]]:
                 "source": source,
                 "path": str(lnk),
                 "target_exe": str(target_path) if target_path else "",
+                "args": info.get("args", ""),
+                "missing": "1" if target_path and not target_path.exists() else "",
                 "file": str(cache_file_for_path(lnk)) if shortcut_cache else "",
                 "kind": "shortcut",
+                "last_used": app_last_used(prefix, lnk),
             }
             app.update({key: shortcut_cache[key] for key in CONFIG_KEYS if key in shortcut_cache})
-            apps.append(app)
+            # installers put the same shortcut on the desktop and in the start
+            # menu; list it once, as the one that has settings if either has
+            key = f'{str(target_path).lower()}\0{app["args"]}' if target_path else real
+            listed = shortcuts.get(key)
+            if listed is None or (app["file"] and not listed["file"]):
+                shortcuts[key] = app
+            # a start from either shortcut is a use of the one listed
+            if listed is not None:
+                shortcuts[key]["last_used"] = max(app["last_used"], listed["last_used"])
+    apps = list(shortcuts.values())
+    for app in apps:
+        # and so is starting its program directly
+        if app["target_exe"]:
+            app["last_used"] = max(app["last_used"], app_last_used(prefix, app["target_exe"]))
     for entry in collect_cache_entries():
         entry_prefix = entry.get("prefix", "")
         exe = entry.get("exe", "")
@@ -1402,8 +1594,9 @@ def scan_apps(prefix: Path) -> list[dict[str, str]]:
             "wayland": entry.get("wayland", "0"),
             "env_vars": entry.get("env_vars", ""),
             "kind": "saved-config",
+            "last_used": app_last_used(prefix, exe_path),
         })
-    return apps
+    return sorted(apps, key=app_sort_key)
 
 
 def desktop_matches_app(path: Path, prefix: Path, app: dict[str, str]) -> bool:
@@ -1501,7 +1694,9 @@ def rename_icon_cache_files(old_name: str, new_name: str) -> dict[str, str]:
     renamed = {}
     if old_base == new_base:
         return renamed
-    for directory in (gui_icon_dir(), exported_icon_dir()):
+    # the manager's own icons are named after the shortcut or exe, which
+    # renaming leaves as it is; only exported icons carry the display name
+    for directory in (exported_icon_dir(),):
         if not directory.is_dir():
             continue
         for icon in list(directory.glob(f"{old_base}.png")) + list(directory.glob(f"{old_base}-*.png")):
@@ -1756,6 +1951,92 @@ def write_cache_entry(entry: dict[str, str]) -> None:
         old_path.unlink(missing_ok=True)
 
 
+RUNNER_PRODUCTS = {"ge": "GE-Proton", "dw": "DW-Proton", "we": "WE-Proton"}
+
+
+def describe_runner_updates(output: str) -> str:
+    """The lines of --check-update, product, installed, ->, latest and
+    (where) separated by tabs, as one would write them."""
+    lines = []
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 5:
+            if line.strip():
+                lines.append(line.strip())
+            continue
+        product, current, _arrow, latest, where = parts
+        where = where.strip("()")
+        where = TEXT["local_runners"] if where == "local" else where.capitalize()
+        lines.append(f"{RUNNER_PRODUCTS.get(product, product)} ({where}): {current} → {latest}")
+    return "\n".join(lines)
+
+
+def app_location(prefix: Path, app: dict[str, str]) -> str:
+    """Where the program is: as Windows names it when it is in the prefix."""
+    shown = windows_display_path(prefix, Path(app.get("target_exe") or app["path"]))
+    home = str(Path.home())
+    return "~" + shown[len(home):] if shown.startswith(home + "/") else shown
+
+
+class SearchRow(Gtk.ListBoxRow):
+    """A list row that the page's search matches against its texts."""
+
+    def __init__(self, *texts: str):
+        super().__init__()
+        self.search_text = " ".join(texts).casefold()
+
+
+def row_matches(row: Gtk.ListBoxRow, query: str) -> bool:
+    text = getattr(row, "search_text", None)
+    return text is None or all(term in text for term in query.casefold().split())
+
+
+def set_image_icon(image: Gtk.Image, icon: str) -> None:
+    if icon and os.path.isabs(icon):
+        image.set_from_file(icon)
+    else:
+        image.set_from_icon_name(icon or "shorin-proton")
+
+
+class IconLoader:
+    """Finds app icons on a worker thread: extracting one from an exe takes
+    a while, and the list must not wait for it."""
+
+    def __init__(self):
+        self.known: dict[tuple, str] = {}
+        self.waiting: dict[tuple, list[Gtk.Image]] = {}
+        self.jobs: queue.Queue = queue.Queue()
+        threading.Thread(target=self.work, daemon=True).start()
+
+    def show(self, image: Gtk.Image, prefix: Path, app: dict[str, str]) -> None:
+        key = (str(prefix), app["path"], app.get("target_exe", ""), app.get("missing", ""))
+        icon = self.known.get(key)
+        # the icon cache folder may have been emptied meanwhile
+        if icon and (not os.path.isabs(icon) or os.path.isfile(icon)):
+            set_image_icon(image, icon)
+            return
+        if key in self.waiting:
+            self.waiting[key].append(image)
+            return
+        self.waiting[key] = [image]
+        self.jobs.put((key, prefix, dict(app)))
+
+    def work(self) -> None:
+        while True:
+            key, prefix, app = self.jobs.get()
+            try:
+                icon = icon_for_app(prefix, app)
+            except Exception:
+                icon = "shorin-proton"
+            GLib.idle_add(self.found, key, icon)
+
+    def found(self, key: tuple, icon: str) -> bool:
+        self.known[key] = icon
+        for image in self.waiting.pop(key, []):
+            set_image_icon(image, icon)
+        return False
+
+
 class ManagerApp(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="io.github.shorin.proton_wrapper_manager")
@@ -1786,6 +2067,8 @@ class ManagerApp(Gtk.Application):
         self.update_running = False
         self.netns_switch = None
         self.syncing_netns = False
+        self.search_entries: dict[str, Gtk.SearchEntry] = {}
+        self.icon_loader = IconLoader()
 
     def do_activate(self):
         sync_color_scheme()
@@ -1806,6 +2089,12 @@ class ManagerApp(Gtk.Application):
         outer.append(self.status_label)
 
         self.window.set_child(outer)
+        shortcuts = Gtk.ShortcutController()
+        shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("<Control>f"),
+                                                Gtk.CallbackAction.new(self.focus_search)))
+        shortcuts.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("Escape"),
+                                                Gtk.CallbackAction.new(self.clear_search)))
+        self.window.add_controller(shortcuts)
         self.window.present()
         self.reload_prefixes()
         self.refresh_all()
@@ -1845,7 +2134,40 @@ class ManagerApp(Gtk.Application):
                 button.add_css_class("nav-button-active")
             else:
                 button.remove_css_class("nav-button-active")
+        # typing anywhere in the window searches the page shown
+        for page, entry in self.search_entries.items():
+            entry.set_key_capture_widget(self.window if page == name else None)
         self.refresh_all()
+
+    def focus_search(self, *_args) -> bool:
+        entry = self.search_entries.get(self.stack.get_visible_child_name() if self.stack else "apps")
+        if entry:
+            entry.grab_focus()
+        return True
+
+    def clear_search(self, *_args) -> bool:
+        """Escape ends a search that typing in the window started, where the
+        entry does not have the focus."""
+        entry = self.search_entries.get(self.stack.get_visible_child_name() if self.stack else "apps")
+        if not entry or not entry.get_text():
+            return False
+        entry.set_text("")
+        return True
+
+    def search_entry(self, page: str, list_box: Gtk.ListBox, hint: str) -> Gtk.SearchEntry:
+        entry = Gtk.SearchEntry(hexpand=True)
+        entry.set_placeholder_text(hint)
+        entry.connect("search-changed", lambda _entry: list_box.invalidate_filter())
+        entry.connect("stop-search", lambda field: field.set_text(""))
+        list_box.set_filter_func(lambda row: row_matches(row, entry.get_text()))
+        # shown while the search hides every row
+        no_match = Gtk.Label(label=TEXT["no_matches"])
+        no_match.add_css_class("dim-label")
+        no_match.set_margin_top(18)
+        no_match.set_margin_bottom(18)
+        list_box.set_placeholder(no_match)
+        self.search_entries[page] = entry
+        return entry
 
     def build_stack(self) -> Gtk.Stack:
         self.stack = Gtk.Stack(hexpand=True, vexpand=True)
@@ -1855,7 +2177,7 @@ class ManagerApp(Gtk.Application):
         self.set_page("apps")
         return self.stack
 
-    def make_page(self, title: str, description: str) -> tuple[Gtk.Box, Gtk.Box, Gtk.ListBox]:
+    def make_page(self, name: str, title: str, description: str, search_hint: str) -> tuple[Gtk.Box, Gtk.Box, Gtk.ListBox]:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         page.set_margin_top(16)
         page.set_margin_bottom(16)
@@ -1872,13 +2194,14 @@ class ManagerApp(Gtk.Application):
         page.append(header)
         list_box = Gtk.ListBox()
         list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        page.append(self.search_entry(name, list_box, search_hint))
         scroll = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         scroll.set_child(list_box)
         page.append(scroll)
         return page, actions, list_box
 
     def apps_page(self) -> Gtk.Widget:
-        page, actions, self.apps_list = self.make_page("", "")
+        page, actions, self.apps_list = self.make_page("apps", "", "", TEXT["search_apps"])
         page.insert_child_after(self.prefix_selector("apps"), page.get_first_child())
         overlay = Gtk.Overlay()
         overlay.set_child(page)
@@ -1896,7 +2219,7 @@ class ManagerApp(Gtk.Application):
         return overlay
 
     def process_page(self) -> Gtk.Widget:
-        page, actions, self.process_list = self.make_page(TEXT["processes"], TEXT["processes_desc"])
+        page, actions, self.process_list = self.make_page("processes", TEXT["processes"], TEXT["processes_desc"], TEXT["search_processes"])
         page.insert_child_after(self.prefix_selector("processes"), page.get_first_child())
         refresh = Gtk.Button(label=TEXT["refresh"])
         refresh.add_css_class("compact-button")
@@ -1909,7 +2232,7 @@ class ManagerApp(Gtk.Application):
         return page
 
     def install_dirs_page(self) -> Gtk.Widget:
-        page, actions, self.install_dirs_list = self.make_page(TEXT["install_dirs"], TEXT["install_dirs_desc"])
+        page, actions, self.install_dirs_list = self.make_page("install_dirs", TEXT["install_dirs"], TEXT["install_dirs_desc"], TEXT["search_dirs"])
         page.insert_child_after(self.prefix_selector("install_dirs"), page.get_first_child())
         refresh = Gtk.Button(label=TEXT["refresh"])
         refresh.add_css_class("compact-button")
@@ -2080,7 +2403,9 @@ class ManagerApp(Gtk.Application):
         child = list_box.get_first_child()
         while child:
             next_child = child.get_next_sibling()
-            list_box.remove(child)
+            # the search's placeholder stays
+            if isinstance(child, Gtk.ListBoxRow):
+                list_box.remove(child)
             child = next_child
 
     def row_box(self) -> Gtk.Box:
@@ -2091,16 +2416,18 @@ class ManagerApp(Gtk.Application):
         box.set_valign(Gtk.Align.CENTER)
         return box
 
-    def text_column(self, title: str, detail: str) -> Gtk.Box:
+    def text_column(self, title: str, detail: str, tooltip: str | None = None, dim: bool = False) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
         box.set_hexpand(True)
         title_label = Gtk.Label(label=title, xalign=0, wrap=True)
         title_label.add_css_class("heading")
+        if dim:
+            title_label.add_css_class("dim-label")
         # one line: a long path is shortened in the middle, the tooltip has it all
         detail_label = Gtk.Label(label=detail, xalign=0)
         detail_label.set_single_line_mode(True)
         detail_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        detail_label.set_tooltip_text(detail)
+        detail_label.set_tooltip_text(tooltip or detail)
         detail_label.add_css_class("dim-label")
         detail_label.set_selectable(True)
         box.append(title_label)
@@ -2114,6 +2441,15 @@ class ManagerApp(Gtk.Application):
             image = Gtk.Image.new_from_icon_name(icon or "shorin-proton")
         image.set_pixel_size(36)
         image.add_css_class("app-icon")
+        return image
+
+    def app_icon_widget(self, prefix: Path, app: dict[str, str]) -> Gtk.Image:
+        """Empty until the icon loader has found the app's icon."""
+        image = Gtk.Image()
+        image.set_pixel_size(36)
+        image.set_size_request(36, 36)
+        image.add_css_class("app-icon")
+        self.icon_loader.show(image, prefix, app)
         return image
 
     def compact_button(self, label: str, css_class: str | None = None) -> Gtk.Button:
@@ -2287,7 +2623,7 @@ class ManagerApp(Gtk.Application):
             try:
                 result = subprocess.run(
                     [str(self.wrapper), "--check-update"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, text=True, timeout=60,
                 )
                 output = result.stdout.strip() if result.returncode == 0 else ""
             except Exception:
@@ -2301,7 +2637,7 @@ class ManagerApp(Gtk.Application):
             return False
         if output:
             self.update_button.set_visible(True)
-            self.update_button.set_tooltip_text(output)
+            self.update_button.set_tooltip_text(describe_runner_updates(output))
         else:
             self.update_button.set_visible(False)
         return False
@@ -2332,10 +2668,8 @@ class ManagerApp(Gtk.Application):
 
         def worker():
             try:
-                result = subprocess.run(
-                    [str(self.wrapper), "--update"],
-                    capture_output=True, text=True, timeout=600,
-                )
+                # no time limit: the wrapper stops a download only once it stalls
+                result = subprocess.run([str(self.wrapper), "--update"], capture_output=True, text=True)
                 success = result.returncode == 0
             except Exception:
                 success = False
@@ -2422,6 +2756,8 @@ class ManagerApp(Gtk.Application):
                 app_id,
                 app_display_name(app),
                 app.get("path", ""),
+                app.get("target_exe", ""),
+                app.get("missing", ""),
                 app.get("runner", ""),
                 app.get("kind", ""),
                 bool(running_app),
@@ -2458,10 +2794,14 @@ class ManagerApp(Gtk.Application):
             app_id = app_identity(prefix, Path(app["path"]))
             running_app = running.get(app_id)
             log_path = Path(str(running_app.get("log", ""))) if running_app and running_app.get("log") else latest_log_for_app(app_id)
-            row = Gtk.ListBoxRow()
+            location = app_location(prefix, app)
+            missing = app.get("missing") == "1"
+            row = SearchRow(app_display_name(app), app.get("name", ""), location, app["path"])
             box = self.row_box()
-            box.append(self.icon_widget(icon_for_app(prefix, app)))
-            box.append(self.text_column(app_display_name(app), app["path"]))
+            box.append(self.app_icon_widget(prefix, app))
+            box.append(self.text_column(app_display_name(app),
+                                        f'{TEXT["target_missing"]} · {location}' if missing else location,
+                                        tooltip=app["path"], dim=missing or app_is_uninstaller(app)))
             log_button = self.compact_button(TEXT["log"])
             log_button.set_sensitive(bool(log_path and log_path.exists()))
             log_button.connect("clicked", lambda _b, item=app, path=log_path: self.show_log_dialog(app_display_name(item), path))
@@ -2497,9 +2837,9 @@ class ManagerApp(Gtk.Application):
             self.install_dirs_list.append(self.empty_row(TEXT["no_install_dirs"]))
             return
         for item in dirs:
-            row = Gtk.ListBoxRow()
-            box = self.row_box()
             path = Path(item["path"])
+            row = SearchRow(str(item.get("name", path.name)), windows_display_path(prefix, path))
+            box = self.row_box()
             detail = " · ".join([
                 windows_display_path(prefix, path),
                 TEXT["exe_count"].format(count=item.get("exe_count", 0)),
@@ -2527,7 +2867,8 @@ class ManagerApp(Gtk.Application):
             self.process_list.append(self.empty_row(TEXT["no_processes"]))
             return
         for proc in processes:
-            row = Gtk.ListBoxRow()
+            # not the exe: for every Windows program that is Wine's loader
+            row = SearchRow(proc["name"], proc["pid"], proc["command"])
             box = self.row_box()
             title = f"{proc['name']}  PID {proc['pid']}  {proc['age']}"
             box.append(self.text_column(title, proc["command"]))
@@ -2613,7 +2954,7 @@ class ManagerApp(Gtk.Application):
                 row = Gtk.ListBoxRow()
                 box = self.row_box()
                 app = {"path": str(exe["path"]), "name": Path(exe["path"]).stem}
-                box.append(self.icon_widget(icon_for_app(prefix, app)))
+                box.append(self.app_icon_widget(prefix, app))
                 title = str(exe["name"])
                 box.append(self.text_column(title, str(exe.get("detail", ""))))
                 add = self.compact_button(TEXT["add_app"], "run-button")
