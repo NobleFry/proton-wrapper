@@ -8,13 +8,13 @@ Arch Linux 可以从AUR安装。
 
 ![](./pics/1.png)
 
-灵感来自 Wine 的配置过程。安装 Wine 后运行 `winecfg` 会在 `~/.wine` 目录初始化前置运行环境。我借鉴并改良了这个设计，运行 exe 的默认行为是检测 `~/.proton` 是否存在，如果不存在则静默初始化。默认运行器是 [`WE-Proton`](https://github.com/SHORiN-KiWATA/we-proton)：它基于 `DW-Proton`，额外修了一些 Wine 的 bug，能运行 WeGame 和一些国服游戏，还内置了游戏加速器 TUN 模式需要的 wintun（见下面的「独立网络」）。
+灵感来自 Wine 的配置过程。安装 Wine 后运行 `winecfg` 会在 `~/.wine` 目录初始化前置运行环境。我借鉴并改良了这个设计，运行 exe 的默认行为是检测 `~/.proton` 是否存在，如果不存在则静默初始化。默认运行器是 [`WE-Proton`](https://github.com/SHORiN-KiWATA/we-proton)：它基于 `GE-Proton` 和 `DW-Proton`，额外修了一些 Wine 的 bug，能运行 WeGame 和一些国服游戏，还内置了游戏加速器 TUN 模式需要的 wintun（见下面的「独立网络」）。
 
 首次自动安装运行器时，临时下载文件会放在 `~/.cache/shorin-proton-wrapper/downloads`，安装成功后清理。下载、解压、初始化过程中只会显示一条桌面通知并原地更新内容；无通知环境时自动降级为仅输出日志。下载不限总时长，只在连续 120 秒几乎没有流量时判定为卡死并中止；中断后重新运行会从断点续传。
 
 安装失败时会弹出常驻通知说明原因，完整日志在 `~/.cache/shorin-proton-wrapper/logs/install-*.log`，前置环境初始化日志在 `~/.cache/shorin-proton-wrapper/logs/init.log`。
 
-Proton 会放进它要求的 Steam Linux Runtime 容器里运行（WE-Proton 和 DW-Proton 要 SLR 4.0，GE-Proton 要 sniper），否则自带的 GStreamer 插件等会缺库，视频和音频解码之类的功能出问题。已装 umu 或 Steam 的运行时会直接复用，没有就从 Valve 下载到 `~/.local/share/shorin-proton-wrapper/runtime`。
+Proton 会放进它要求的 Steam Linux Runtime 容器里运行（WE-Proton、DW-Proton 和 GE-Proton 11 要 SLR 4.0，GE-Proton 10 要 sniper），否则自带的 GStreamer 插件等会缺库，视频和音频解码之类的功能出问题。已装 umu 或 Steam 的运行时会直接复用，没有就从 Valve 下载到 `~/.local/share/shorin-proton-wrapper/runtime`。
 
 32 位程序默认用 Wine 的新 WoW64 模式运行（`PROTON_USE_WOW64=1`），不需要安装 32 位系统库。个别 32 位程序有问题时，可以在它的配置里把环境变量设成 `PROTON_USE_WOW64=0`。
 
