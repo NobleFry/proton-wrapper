@@ -2428,6 +2428,8 @@ class ManagerApp(Gtk.Application):
             command.extend(["--runner", "ge"])
         elif "dw-proton" in runner.lower() or "dwproton" in runner.lower():
             command.extend(["--runner", "dw"])
+        elif "we-proton" in runner.lower() or "weproton" in runner.lower():
+            command.extend(["--runner", "we"])
         command.append(path)
         subprocess.Popen(command)
         self.set_status(f"{TEXT['run']}: {path}")

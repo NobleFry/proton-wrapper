@@ -83,6 +83,7 @@ COMMON_FPS = ["30", "40", "45", "60", "90", "120", "144", "165", "240"]
 DEFAULT_RUNNERS = (
     {"id": "dw", "name": "DW-Proton", "dir_name": "DW-Proton Latest"},
     {"id": "ge", "name": "Proton-GE", "dir_name": "Proton-GE Latest"},
+    {"id": "we", "name": "WE-Proton", "dir_name": "WE-Proton Latest"},
 )
 
 

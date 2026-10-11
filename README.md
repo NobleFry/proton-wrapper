@@ -55,26 +55,26 @@ shorin-proton-wrapper
   shorin-proton-wrapper [选项] app.exe [参数...]
 
 选项:
-  --init                  初始化，默认路径 ~/.proton
-  -p, --prefix 目录       指定前置环境路径，若不存在则初始化
-  --status                显示前置环境信息
-  --list-runner           列出已安装的运行器
-  --runner 路径|ge|dw     指定运行器
-  --install ge|dw         安装运行器，默认安装至 ~/.local/share/proton/runners
-  --install-steam ge|dw   给 Steam 安装运行器
-  --install-lutris ge|dw  给 Lutris 安装运行器
-  --download ge|dw        仅下载运行器，默认下载路径为 XDG 下载目录
-  --list-version ge|dw    列出可使用的运行器版本
-  --version 版本          指定特定版本，默认 latest
-  --update                升级所有已安装的 Latest 运行器
-  --doctor                检查 wrapper 运行环境并输出诊断信息
-  --remove ge|dw          移除默认位置中已安装的运行器
-  --remove-steam ge|dw    移除 Steam 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
-  --remove-lutris ge|dw   移除 Lutris 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
-  --gs, --gamescope       用 Gamescope 运行。默认全屏；需要自定义分辨率、帧率、FSR 或遇到显示兼容问题时使用
-  --mangohud              启用 MangoHud 性能叠加层
-  --debug                 将完整调试日志写入 ~/.cache/shorin-proton-wrapper/logs
-  --help-full             显示完整说明
+  --init                     初始化，默认路径 ~/.proton
+  -p, --prefix 目录          指定前置环境路径，若不存在则初始化
+  --status                   显示前置环境信息
+  --list-runner              列出已安装的运行器
+  --runner 路径|ge|dw|we     指定运行器
+  --install ge|dw|we         安装运行器，默认安装至 ~/.local/share/proton/runners
+  --install-steam ge|dw|we   给 Steam 安装运行器
+  --install-lutris ge|dw|we  给 Lutris 安装运行器
+  --download ge|dw|we        仅下载运行器，默认下载路径为 XDG 下载目录
+  --list-version ge|dw|we    列出可使用的运行器版本
+  --version 版本             指定特定版本，默认 latest
+  --update                   升级所有已安装的 Latest 运行器
+  --doctor                   检查 wrapper 运行环境并输出诊断信息
+  --remove ge|dw|we          移除默认位置中已安装的运行器
+  --remove-steam ge|dw|we    移除 Steam 中指定运行器，省略 ge|dw|we 则移除全部由 wrapper 安装的运行器
+  --remove-lutris ge|dw|we   移除 Lutris 中指定运行器，省略 ge|dw|we 则移除全部由 wrapper 安装的运行器
+  --gs, --gamescope          用 Gamescope 运行。默认全屏；需要自定义分辨率、帧率、FSR 或遇到显示兼容问题时使用
+  --mangohud                 启用 MangoHud 性能叠加层
+  --debug                    将完整调试日志写入 ~/.cache/shorin-proton-wrapper/logs
+  --help-full                显示完整说明
 
 示例:
   shorin-proton-wrapper --init

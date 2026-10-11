@@ -158,27 +158,27 @@ Usage:
   shorin-proton-wrapper [options] app.exe [args...]
 
 Options:
-  --init                  initialize prefix, default ~/.proton
-  -p, --prefix DIR        prefix directory, initialize if needed
-  --status                show prefix information
-  --list-runner           list installed runners
-  --runner PATH|ge|dw     use specified runner
-  --install ge|dw         install runner to ~/.local/share/proton/runners
-  --install-steam ge|dw   install runner for Steam
-  --install-lutris ge|dw  install runner for Lutris
-  --download ge|dw        download runner only, default XDG download directory
-  --list-version ge|dw    list available runner versions
-  --version VERSION       use specific release tag, default latest
-  --update                update all installed Latest runners
-  --check-update          check for available runner updates (no install)
-  --doctor                check wrapper environment and print diagnostics
-  --remove ge|dw          remove runner from ~/.local/share/proton/runners
-  --remove-steam ge|dw    remove runner from Steam, omit ge|dw to remove all wrapper-installed runners
-  --remove-lutris ge|dw   remove runner from Lutris, omit ge|dw to remove all wrapper-installed runners
-  --gs, --gamescope       run with Gamescope; use for compatibility, custom resolution/FPS, or FSR
-  --mangohud              enable MangoHud performance overlay
-  --debug                 write full debug log to ~/.cache/shorin-proton-wrapper/logs
-  --help-full             show detailed help
+  --init                     initialize prefix, default ~/.proton
+  -p, --prefix DIR           prefix directory, initialize if needed
+  --status                   show prefix information
+  --list-runner              list installed runners
+  --runner PATH|ge|dw|we     use specified runner
+  --install ge|dw|we         install runner to ~/.local/share/proton/runners
+  --install-steam ge|dw|we   install runner for Steam
+  --install-lutris ge|dw|we  install runner for Lutris
+  --download ge|dw|we        download runner only, default XDG download directory
+  --list-version ge|dw|we    list available runner versions
+  --version VERSION          use specific release tag, default latest
+  --update                   update all installed Latest runners
+  --check-update             check for available runner updates (no install)
+  --doctor                   check wrapper environment and print diagnostics
+  --remove ge|dw|we          remove runner from ~/.local/share/proton/runners
+  --remove-steam ge|dw|we    remove runner from Steam, omit ge|dw|we to remove all wrapper-installed runners
+  --remove-lutris ge|dw|we   remove runner from Lutris, omit ge|dw|we to remove all wrapper-installed runners
+  --gs, --gamescope          run with Gamescope; use for compatibility, custom resolution/FPS, or FSR
+  --mangohud                 enable MangoHud performance overlay
+  --debug                    write full debug log to ~/.cache/shorin-proton-wrapper/logs
+  --help-full                show detailed help
 
 Examples:
   shorin-proton-wrapper --init
@@ -202,27 +202,27 @@ usage_zh() {
   shorin-proton-wrapper [选项] app.exe [参数...]
 
 选项:
-  --init                  初始化，默认路径 ~/.proton
-  -p, --prefix 目录       指定前置环境路径，若不存在则初始化
-  --status                显示前置环境信息
-  --list-runner           列出已安装的运行器
-  --runner 路径|ge|dw     指定运行器
-  --install ge|dw         安装运行器，默认安装至 ~/.local/share/proton/runners
-  --install-steam ge|dw   给 Steam 安装运行器
-  --install-lutris ge|dw  给 Lutris 安装运行器
-  --download ge|dw        仅下载运行器，默认下载路径为 XDG 下载目录
-  --list-version ge|dw    列出可使用的运行器版本
-  --version 版本          指定特定版本，默认 latest
-  --update                升级所有已安装的 Latest 运行器
-  --check-update          检查运行器是否有可用更新（不安装）
-  --doctor                检查 wrapper 运行环境并输出诊断信息
-  --remove ge|dw          移除默认位置中已安装的运行器
-  --remove-steam ge|dw    移除 Steam 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
-  --remove-lutris ge|dw   移除 Lutris 中指定运行器，省略 ge|dw 则移除全部由 wrapper 安装的运行器
-  --gs, --gamescope       用 Gamescope 运行。默认全屏；需要自定义分辨率、帧率、FSR 或遇到显示兼容问题时使用
-  --mangohud              启用 MangoHud 性能叠加层
-  --debug                 将完整调试日志写入 ~/.cache/shorin-proton-wrapper/logs
-  --help-full             显示完整说明
+  --init                     初始化，默认路径 ~/.proton
+  -p, --prefix 目录          指定前置环境路径，若不存在则初始化
+  --status                   显示前置环境信息
+  --list-runner              列出已安装的运行器
+  --runner 路径|ge|dw|we     指定运行器
+  --install ge|dw|we         安装运行器，默认安装至 ~/.local/share/proton/runners
+  --install-steam ge|dw|we   给 Steam 安装运行器
+  --install-lutris ge|dw|we  给 Lutris 安装运行器
+  --download ge|dw|we        仅下载运行器，默认下载路径为 XDG 下载目录
+  --list-version ge|dw|we    列出可使用的运行器版本
+  --version 版本             指定特定版本，默认 latest
+  --update                   升级所有已安装的 Latest 运行器
+  --check-update             检查运行器是否有可用更新（不安装）
+  --doctor                   检查 wrapper 运行环境并输出诊断信息
+  --remove ge|dw|we          移除默认位置中已安装的运行器
+  --remove-steam ge|dw|we    移除 Steam 中指定运行器，省略 ge|dw|we 则移除全部由 wrapper 安装的运行器
+  --remove-lutris ge|dw|we   移除 Lutris 中指定运行器，省略 ge|dw|we 则移除全部由 wrapper 安装的运行器
+  --gs, --gamescope          用 Gamescope 运行。默认全屏；需要自定义分辨率、帧率、FSR 或遇到显示兼容问题时使用
+  --mangohud                 启用 MangoHud 性能叠加层
+  --debug                    将完整调试日志写入 ~/.cache/shorin-proton-wrapper/logs
+  --help-full                显示完整说明
 
 示例:
   shorin-proton-wrapper --init
@@ -258,7 +258,7 @@ Prefix tools:
 
 Runner discovery:
   shorin-proton-wrapper --list-runner
-  shorin-proton-wrapper --list-version ge|dw
+  shorin-proton-wrapper --list-version ge|dw|we
 
 Download only:
   shorin-proton-wrapper --download ge [-d DIR] [--version TAG]
@@ -267,8 +267,8 @@ Download only:
 Install runner:
   shorin-proton-wrapper --install ge [-d DIR] [--version TAG]
   shorin-proton-wrapper --install dw [-d DIR] [--version TAG]
-  shorin-proton-wrapper --install-steam ge|dw
-  shorin-proton-wrapper --install-lutris ge|dw
+  shorin-proton-wrapper --install-steam ge|dw|we
+  shorin-proton-wrapper --install-lutris ge|dw|we
 
 Update runners:
   shorin-proton-wrapper --update
@@ -278,9 +278,9 @@ Diagnostics:
   shorin-proton-wrapper --doctor
 
 Remove runner:
-  shorin-proton-wrapper --remove ge|dw
-  shorin-proton-wrapper --remove-steam ge|dw
-  shorin-proton-wrapper --remove-lutris ge|dw
+  shorin-proton-wrapper --remove ge|dw|we
+  shorin-proton-wrapper --remove-steam ge|dw|we
+  shorin-proton-wrapper --remove-lutris ge|dw|we
 
 Install targets:
   local   ~/.local/share/proton/runners
@@ -312,7 +312,7 @@ usage_full_zh() {
 
 运行器发现:
   shorin-proton-wrapper --list-runner
-  shorin-proton-wrapper --list-version ge|dw
+  shorin-proton-wrapper --list-version ge|dw|we
 
 只下载:
   shorin-proton-wrapper --download ge [-d 目录] [--version 标签]
@@ -321,8 +321,8 @@ usage_full_zh() {
 安装运行器:
   shorin-proton-wrapper --install ge [-d 目录] [--version 标签]
   shorin-proton-wrapper --install dw [-d 目录] [--version 标签]
-  shorin-proton-wrapper --install-steam ge|dw
-  shorin-proton-wrapper --install-lutris ge|dw
+  shorin-proton-wrapper --install-steam ge|dw|we
+  shorin-proton-wrapper --install-lutris ge|dw|we
 
 更新运行器:
   shorin-proton-wrapper --update
@@ -332,9 +332,9 @@ usage_full_zh() {
   shorin-proton-wrapper --doctor
 
 移除运行器:
-  shorin-proton-wrapper --remove ge|dw
-  shorin-proton-wrapper --remove-steam ge|dw
-  shorin-proton-wrapper --remove-lutris ge|dw
+  shorin-proton-wrapper --remove ge|dw|we
+  shorin-proton-wrapper --remove-steam ge|dw|we
+  shorin-proton-wrapper --remove-lutris ge|dw|we
 
 安装目标:
   local   ~/.local/share/proton/runners
@@ -421,10 +421,10 @@ die_runner_not_found() {
   local runner="$1"
   if [[ "$(ui_lang)" == "zh" ]]; then
     die "未找到或不支持的运行器: $runner
-使用 --list-runner 查看可用运行器，或使用 --runner ge/dw。"
+使用 --list-runner 查看可用运行器，或使用 --runner ge/dw/we。"
   else
     die "runner not found or unsupported: $runner
-Use --list-runner to see available runners, or use --runner ge/dw."
+Use --list-runner to see available runners, or use --runner ge/dw/we."
   fi
 }
 
@@ -841,6 +841,9 @@ normalize_product() {
     dw|dwproton|dw-proton|dw_proton)
       printf 'dw\n'
       ;;
+    we|weproton|we-proton|we_proton)
+      printf 'we\n'
+      ;;
     *)
       die "unknown runner product: $1"
       ;;
@@ -852,6 +855,7 @@ runner_dir_name() {
   case "$product" in
     ge) printf 'Proton-GE Latest' ;;
     dw) printf 'DW-Proton Latest' ;;
+    we) printf 'WE-Proton Latest' ;;
     *) die "unknown runner product: $product" ;;
   esac
 }
@@ -873,6 +877,9 @@ runner_product_alias() {
       ;;
     dw|dwproton|dw-proton|dw_proton)
       printf 'dw\n'
+      ;;
+    we|weproton|we-proton|we_proton)
+      printf 'we\n'
       ;;
     *)
       return 1
@@ -920,6 +927,8 @@ if product == "ge":
     url = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=20"
 elif product == "dw":
     url = "https://dawn.wine/api/v1/repos/dawn-winery/dwproton/releases?limit=20"
+elif product == "we":
+    url = "https://api.github.com/repos/SHORiN-KiWATA/we-proton/releases?per_page=20"
 else:
     raise SystemExit(f"unknown product: {product}")
 
@@ -982,8 +991,18 @@ elif product == "dw":
         url = f"https://dawn.wine/api/v1/repos/dawn-winery/dwproton/releases/tags/{version}"
     archive_suffixes = ("x86_64.tar.xz",)
     checksum_suffix = "x86_64.sha512sum"
+elif product == "we":
+    if version == "latest":
+        url = "https://api.github.com/repos/SHORiN-KiWATA/we-proton/releases/latest"
+    else:
+        url = f"https://api.github.com/repos/SHORiN-KiWATA/we-proton/releases/tags/{version}"
+    archive_suffixes = (".tar.xz",)
+    checksum_suffix = ".sha512sum"
 else:
     raise SystemExit(f"unknown product: {product}")
+
+# WE-Proton releases also carry <tag>-source.tar.xz, the patched sources
+excluded_suffixes = ("-source.tar.xz",)
 
 request = urllib.request.Request(url, headers={"User-Agent": "proton-cli"})
 try:
@@ -1004,7 +1023,8 @@ for asset in assets:
     download = asset.get("browser_download_url", "")
     if not download:
         continue
-    if archive is None and asset_matches_host(name) and any(name.endswith(suffix) for suffix in archive_suffixes):
+    if archive is None and asset_matches_host(name) and any(name.endswith(suffix) for suffix in archive_suffixes) \
+            and not any(name.endswith(suffix) for suffix in excluded_suffixes):
         archive = (name, download)
     if checksum is None and asset_matches_host(name) and name.endswith(checksum_suffix):
         checksum = (name, download)
@@ -1293,6 +1313,9 @@ installed_runner_version() {
       dw)
         version="$(printf '%s\n' "$line" | grep -o 'dwproton-[^[:space:]]*' | head -n 1 || true)"
         ;;
+      we)
+        version="$(printf '%s\n' "$line" | grep -o 'we-proton-[^[:space:]]*' | head -n 1 || true)"
+        ;;
       *)
         version=""
         ;;
@@ -1451,7 +1474,7 @@ update_runner() {
   skipped=0
 
   for INSTALL_TO in local steam lutris; do
-    for product in ge dw; do
+    for product in ge dw we; do
       PRODUCT="$product"
       target="$(expand_path "$(default_install_dir)")/$(runner_dir_name "$product")"
       if [[ -e "$target" ]]; then
@@ -1496,7 +1519,7 @@ check_update_runner() {
   has_update=0
 
   for INSTALL_TO in local steam lutris; do
-    for product in ge dw; do
+    for product in ge dw we; do
       PRODUCT="$product"
       target="$(expand_path "$(default_install_dir)")/$(runner_dir_name "$product")"
       if [[ -e "$target" ]]; then
@@ -2073,6 +2096,8 @@ apply_cached_association() {
       RUNNER_ARG="ge"
     elif [[ "${cache_runner,,}" == *dw-proton* || "${cache_runner,,}" == *dwproton* ]]; then
       RUNNER_ARG="dw"
+    elif [[ "${cache_runner,,}" == *we-proton* || "${cache_runner,,}" == *weproton* ]]; then
+      RUNNER_ARG="we"
     fi
   fi
   if [[ $GAMESCOPE_EXPLICIT -eq 0 ]]; then
@@ -2488,7 +2513,7 @@ parse_args() {
         shift
         ;;
       --list-version)
-        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        [[ $# -ge 2 ]] || die "$1 requires ge, dw or we"
         ACTION="list-version"
         PRODUCT="$2"
         shift 2
@@ -2506,26 +2531,26 @@ parse_args() {
         shift
         ;;
       --download)
-        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        [[ $# -ge 2 ]] || die "$1 requires ge, dw or we"
         ACTION="download"
         PRODUCT="$2"
         shift 2
         ;;
       --install)
-        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        [[ $# -ge 2 ]] || die "$1 requires ge, dw or we"
         ACTION="install"
         PRODUCT="$2"
         shift 2
         ;;
       --install-steam)
-        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        [[ $# -ge 2 ]] || die "$1 requires ge, dw or we"
         ACTION="install"
         PRODUCT="$2"
         INSTALL_TO="steam"
         shift 2
         ;;
       --install-lutris)
-        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        [[ $# -ge 2 ]] || die "$1 requires ge, dw or we"
         ACTION="install"
         PRODUCT="$2"
         INSTALL_TO="lutris"
@@ -2544,7 +2569,7 @@ parse_args() {
         shift
         ;;
       --remove)
-        [[ $# -ge 2 ]] || die "$1 requires ge or dw"
+        [[ $# -ge 2 ]] || die "$1 requires ge, dw or we"
         ACTION="remove"
         PRODUCT="$2"
         shift 2
