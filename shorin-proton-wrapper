@@ -1507,13 +1507,20 @@ Close the programs running with it, then update again."
   printf 'Installed: %s\n' "$target/proton"
 }
 
+# Whether release $2 is newer than the installed version $1. A runner built
+# locally, or installed before a release was withdrawn, can be ahead of the
+# latest release; replacing it would be a downgrade.
+version_newer() {
+  [[ "$1" != "$2" && "$(printf '%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$2" ]]
+}
+
 update_runner() {
-  local product target install_to_old old_product old_version release_output info tag current found updated skipped
+  local product target install_to_old old_product old_version release_output tag current found updated skipped
+  local -A latest_tags=()
   install_to_old="$INSTALL_TO"
   old_product="$PRODUCT"
   old_version="$VERSION"
   VERSION="latest"
-  info=()
   found=0
   updated=0
   skipped=0
@@ -1524,13 +1531,19 @@ update_runner() {
       target="$(expand_path "$(default_install_dir)")/$(runner_dir_name "$product")"
       if [[ -e "$target" ]]; then
         found=1
-        release_output="$(release_info "$product" latest 2>&1)" || die "$release_output"
-        mapfile -t info <<< "$release_output"
-        tag="${info[0]:-}"
+        # one lookup per product, though it may be installed in several places
+        if [[ ! -v "latest_tags[$product]" ]]; then
+          release_output="$(release_info "$product" latest 2>&1)" || die "$release_output"
+          latest_tags[$product]="${release_output%%$'\n'*}"
+        fi
+        tag="${latest_tags[$product]}"
         [[ -n "$tag" ]] || die "release not found for $product latest"
         current="$(installed_runner_version "$target" "$product" || true)"
         if [[ "$current" == "$tag" ]]; then
           printf 'Already latest: %s (%s)\n' "$target" "$tag"
+          skipped=1
+        elif [[ -n "$current" ]] && ! version_newer "$current" "$tag"; then
+          printf 'Newer than the latest release, kept: %s (%s, latest %s)\n' "$target" "$current" "$tag"
           skipped=1
         else
           printf 'Updating: %s\n' "$target"
@@ -1554,14 +1567,14 @@ update_runner() {
 }
 
 check_update_runner() {
-  local product target release_output info tag current found has_update
+  local product target release_output tag current found
   local install_to_old old_product old_version
+  local -A latest_tags=()
   install_to_old="$INSTALL_TO"
   old_product="$PRODUCT"
   old_version="$VERSION"
   VERSION="latest"
   found=0
-  has_update=0
 
   for INSTALL_TO in local steam lutris; do
     for product in ge dw we; do
@@ -1569,14 +1582,15 @@ check_update_runner() {
       target="$(expand_path "$(default_install_dir)")/$(runner_dir_name "$product")"
       if [[ -e "$target" ]]; then
         found=1
-        release_output="$(release_info "$product" latest 2>/dev/null)" || continue
-        mapfile -t info <<< "$release_output"
-        tag="${info[0]:-}"
+        if [[ ! -v "latest_tags[$product]" ]]; then
+          release_output="$(release_info "$product" latest 2>/dev/null)" || release_output=""
+          latest_tags[$product]="${release_output%%$'\n'*}"
+        fi
+        tag="${latest_tags[$product]}"
         [[ -n "$tag" ]] || continue
         current="$(installed_runner_version "$target" "$product" 2>/dev/null || true)"
-        if [[ -n "$current" && "$current" != "$tag" ]]; then
+        if [[ -n "$current" ]] && version_newer "$current" "$tag"; then
           printf '%s\t%s\t->\t%s\t(%s)\n' "$product" "$current" "$tag" "$INSTALL_TO"
-          has_update=1
         fi
       fi
     done
