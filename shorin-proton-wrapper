@@ -5,6 +5,9 @@ ORIGINAL_ARGS=("$@")
 DEFAULT_PREFIX="${PROTON_PREFIX:-$HOME/.proton}"
 XDG_DATA_HOME_VALUE="${XDG_DATA_HOME:-$HOME/.local/share}"
 XDG_CACHE_HOME_VALUE="${XDG_CACHE_HOME:-$HOME/.cache}"
+# Runners go where Steam keeps compatibility tools, which other launchers read
+# too; earlier versions installed them in LOCAL_RUNNER_DIR, still used.
+STEAM_RUNNER_DIR="$HOME/.local/share/Steam/compatibilitytools.d"
 LOCAL_RUNNER_DIR="$XDG_DATA_HOME_VALUE/proton/runners"
 WRAPPER_CACHE_DIR="$XDG_CACHE_HOME_VALUE/shorin-proton-wrapper"
 INSTALL_DOWNLOAD_DIR="$WRAPPER_CACHE_DIR/downloads"
@@ -36,7 +39,7 @@ PREFIX="$DEFAULT_PREFIX"
 RUNNER_ARG="${PROTON_RUNNER:-}"
 DOWNLOAD_DIR=""
 INSTALL_DIR=""
-INSTALL_TO="local"
+INSTALL_TO="default"
 CLEAN=0
 TARGET=""
 TARGET_ARGS=()
@@ -168,8 +171,8 @@ Options:
   --status                   show prefix information
   --list-runner              list installed runners
   --runner PATH|ge|dw|we     use specified runner
-  --install ge|dw|we         install runner to ~/.local/share/proton/runners
-  --install-steam ge|dw|we   install runner for Steam
+  --install ge|dw|we         install runner to ~/.local/share/Steam/compatibilitytools.d
+  --install-steam ge|dw|we   same as --install
   --install-lutris ge|dw|we  install runner for Lutris
   --download ge|dw|we        download runner only, default XDG download directory
   --list-version ge|dw|we    list available runner versions
@@ -177,7 +180,7 @@ Options:
   --update                   update all installed Latest runners
   --check-update             check for available runner updates (no install)
   --doctor                   check wrapper environment and print diagnostics
-  --remove ge|dw|we          remove runner from ~/.local/share/proton/runners
+  --remove ge|dw|we          remove runner from the default location
   --remove-steam ge|dw|we    remove runner from Steam, omit ge|dw|we to remove all wrapper-installed runners
   --remove-lutris ge|dw|we   remove runner from Lutris, omit ge|dw|we to remove all wrapper-installed runners
   --gs, --gamescope          run with Gamescope; use for compatibility, custom resolution/FPS, or FSR
@@ -214,8 +217,8 @@ usage_zh() {
   --status                   显示前置环境信息
   --list-runner              列出已安装的运行器
   --runner 路径|ge|dw|we     指定运行器
-  --install ge|dw|we         安装运行器，默认安装至 ~/.local/share/proton/runners
-  --install-steam ge|dw|we   给 Steam 安装运行器
+  --install ge|dw|we         安装运行器，默认安装至 ~/.local/share/Steam/compatibilitytools.d
+  --install-steam ge|dw|we   同 --install
   --install-lutris ge|dw|we  给 Lutris 安装运行器
   --download ge|dw|we        仅下载运行器，默认下载路径为 XDG 下载目录
   --list-version ge|dw|we    列出可使用的运行器版本
@@ -300,8 +303,8 @@ Remove runner:
   shorin-proton-wrapper --remove-lutris ge|dw|we
 
 Install targets:
-  local   ~/.local/share/proton/runners
-  steam   ~/.local/share/Steam/compatibilitytools.d
+  steam   ~/.local/share/Steam/compatibilitytools.d (default)
+  local   ~/.local/share/proton/runners (earlier versions; still used and updated)
   lutris  ~/.local/share/lutris/runners/wine
 
 Environment:
@@ -360,8 +363,8 @@ usage_full_zh() {
   shorin-proton-wrapper --remove-lutris ge|dw|we
 
 安装目标:
-  local   ~/.local/share/proton/runners
-  steam   ~/.local/share/Steam/compatibilitytools.d
+  steam   ~/.local/share/Steam/compatibilitytools.d（默认）
+  local   ~/.local/share/proton/runners（旧版本的位置，照常使用和更新）
   lutris  ~/.local/share/lutris/runners/wine
 
 环境变量:
@@ -497,11 +500,11 @@ steam_root_dir() {
 
 default_install_dir() {
   case "$INSTALL_TO" in
+    default|steam)
+      printf '%s\n' "$STEAM_RUNNER_DIR"
+      ;;
     local)
       printf '%s\n' "$LOCAL_RUNNER_DIR"
-      ;;
-    steam)
-      printf '%s\n' "$HOME/.local/share/Steam/compatibilitytools.d"
       ;;
     lutris)
       printf '%s\n' "$HOME/.local/share/lutris/runners/wine"
@@ -674,8 +677,8 @@ collect_runners() {
 
   shopt -s nullglob
   # The default runner first: whoever takes the first runner gets it.
+  add_proton_paths steam "$STEAM_RUNNER_DIR/$(runner_dir_name "$DEFAULT_PRODUCT")/proton"
   add_proton_paths local "$LOCAL_RUNNER_DIR/$(runner_dir_name "$DEFAULT_PRODUCT")/proton"
-  add_proton_paths local "$LOCAL_RUNNER_DIR"/*/proton
 
   add_proton_paths steam \
     "$HOME/.local/share/Steam/compatibilitytools.d/DW-Proton Latest/proton" \
@@ -685,6 +688,7 @@ collect_runners() {
   add_proton_paths steam \
     "$HOME/.local/share/Steam/compatibilitytools.d"/*/proton \
     "$HOME/.steam/root/compatibilitytools.d"/*/proton
+  add_proton_paths local "$LOCAL_RUNNER_DIR"/*/proton
 
   add_proton_paths steam-system \
     "/usr/share/steam/compatibilitytools.d"/*/proton \
@@ -916,10 +920,11 @@ try_resolve_runner_product() {
   local product="$1" name path
   name="$(runner_dir_name "$product")"
 
+  # found in any of these places, it is used and not downloaded again
   for path in \
-    "$LOCAL_RUNNER_DIR/$name/proton" \
-    "$HOME/.local/share/Steam/compatibilitytools.d/$name/proton" \
+    "$STEAM_RUNNER_DIR/$name/proton" \
     "$HOME/.steam/root/compatibilitytools.d/$name/proton" \
+    "$LOCAL_RUNNER_DIR/$name/proton" \
     "/usr/share/steam/compatibilitytools.d/$name/proton" \
     "/usr/lib/steam/compatibilitytools.d/$name/proton" \
     "$HOME/.var/app/com.valvesoftware.Steam/data/Steam/compatibilitytools.d/$name/proton" \
@@ -1604,27 +1609,35 @@ check_update_runner() {
 }
 
 remove_runner() {
-  local product dir_name install_dir target lang
+  local product dir_name install_dir target targets removed lang
   product="$(normalize_product "$PRODUCT")"
   dir_name="$(runner_target_dir_name "$product" "$VERSION")"
   install_dir="$(expand_path "${INSTALL_DIR:-$(default_install_dir)}")"
-  target="$install_dir/$dir_name"
+  targets=("$install_dir/$dir_name")
+  # --remove also takes what earlier versions installed in the old place
+  if [[ -z "$INSTALL_DIR" && "$INSTALL_TO" == "default" ]]; then
+    targets+=("$LOCAL_RUNNER_DIR/$dir_name")
+  fi
   lang="$(ui_lang)"
 
-  if [[ ! -e "$target" ]]; then
+  removed=0
+  for target in "${targets[@]}"; do
+    [[ -e "$target" ]] || continue
+    rm -rf "$target"
+    removed=1
+    if [[ "$lang" == "zh" ]]; then
+      printf '已移除: %s\n' "$target"
+    else
+      printf 'Removed: %s\n' "$target"
+    fi
+  done
+
+  if [[ $removed -eq 0 ]]; then
     if [[ "$lang" == "zh" ]]; then
       die "$dir_name 未安装"
     else
       die "$dir_name is not installed"
     fi
-  fi
-
-  rm -rf "$target"
-
-  if [[ "$lang" == "zh" ]]; then
-    printf '已移除: %s\n' "$target"
-  else
-    printf 'Removed: %s\n' "$target"
   fi
 }
 
@@ -1669,7 +1682,7 @@ ensure_runner_product() {
 
   PRODUCT="$product"
   VERSION="latest"
-  INSTALL_TO="local"
+  INSTALL_TO="default"
   status=0
   install_runner_with_notifications || status=$?
 
@@ -2947,7 +2960,7 @@ run_doctor() {
 
   printf '\nPaths:\n'
   doctor_status "prefix" "$PREFIX" "$PREFIX/pfx"
-  doctor_status "install dir" "$LOCAL_RUNNER_DIR"
+  doctor_status "install dir" "$STEAM_RUNNER_DIR"
   doctor_status "download cache" "$INSTALL_DOWNLOAD_DIR"
   doctor_status "log dir" "$WRAPPER_CACHE_DIR/logs"
 

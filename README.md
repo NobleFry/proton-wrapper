@@ -10,6 +10,8 @@ Arch Linux 可以从AUR安装。
 
 灵感来自 Wine 的配置过程。安装 Wine 后运行 `winecfg` 会在 `~/.wine` 目录初始化前置运行环境。我借鉴并改良了这个设计，运行 exe 的默认行为是检测 `~/.proton` 是否存在，如果不存在则静默初始化。默认运行器是 [`WE-Proton`](https://github.com/SHORiN-KiWATA/we-proton)：它基于 `GE-Proton` 和 `DW-Proton`，额外修了一些 Wine 的 bug，能运行 WeGame 和一些国服游戏，还内置了游戏加速器 TUN 模式需要的 wintun（见下面的「独立网络」）。
 
+运行器默认装在 `~/.local/share/Steam/compatibilitytools.d`，Steam 和不少第三方启动器也读这个目录。这里（或旧版本用的 `~/.local/share/proton/runners`、Lutris 的目录）已经有 `WE-Proton Latest`、`Proton-GE Latest`、`DW-Proton Latest` 时直接使用，不会重复下载；`--update` 会一并更新这几个位置里的 Latest 运行器。
+
 首次自动安装运行器时，临时下载文件会放在 `~/.cache/shorin-proton-wrapper/downloads`，安装成功后清理。下载、解压、初始化过程中只会显示一条桌面通知并原地更新内容；无通知环境时自动降级为仅输出日志。下载不限总时长，只在连续 120 秒几乎没有流量时判定为卡死并中止；中断后重新运行会从断点续传。
 
 安装失败时会弹出常驻通知说明原因，完整日志在 `~/.cache/shorin-proton-wrapper/logs/install-*.log`，前置环境初始化日志在 `~/.cache/shorin-proton-wrapper/logs/init.log`。
@@ -84,8 +86,8 @@ shorin-proton-wrapper
   --status                   显示前置环境信息
   --list-runner              列出已安装的运行器
   --runner 路径|ge|dw|we     指定运行器
-  --install ge|dw|we         安装运行器，默认安装至 ~/.local/share/proton/runners
-  --install-steam ge|dw|we   给 Steam 安装运行器
+  --install ge|dw|we         安装运行器，默认安装至 ~/.local/share/Steam/compatibilitytools.d
+  --install-steam ge|dw|we   同 --install
   --install-lutris ge|dw|we  给 Lutris 安装运行器
   --download ge|dw|we        仅下载运行器，默认下载路径为 XDG 下载目录
   --list-version ge|dw|we    列出可使用的运行器版本
