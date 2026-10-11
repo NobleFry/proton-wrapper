@@ -17,7 +17,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk, Pango
 
 
 def is_zh() -> bool:
@@ -77,6 +77,11 @@ TEXT = {
     "fullscreen": "全屏运行" if ZH else "Fullscreen",
     "mangohud": "MangoHud" if ZH else "MangoHud",
     "mangohud_desc": "显示帧数和性能占用" if ZH else "Show FPS and performance usage",
+    "wayland": "以 Wayland 运行" if ZH else "Run on Wayland",
+    "wayland_desc": "使用 Wine 的 Wayland 驱动。开启 Gamescope 时不生效；前置环境里已有程序在运行时，沿用它们的显示方式。" if ZH else "Use Wine's Wayland driver. Not with Gamescope; while programs of the prefix are running, it follows how they are shown.",
+    "netns": "独立网络" if ZH else "Separate network",
+    "netns_desc": "让这个前置环境的程序运行在独立的网络命名空间里，加速器（TUN 模式）只接管这里的程序，需要 WE-Proton。程序看到的网卡和用户会变，带反作弊的游戏请谨慎。该前置环境的程序全部关闭后生效。" if ZH else "Run the programs of this prefix in their own network namespace, so a game accelerator in TUN mode only takes over these; needs WE-Proton. Programs see another adapter and user, so be careful with anti-cheat. Takes effect once all programs of the prefix are closed.",
+    "netns_missing": "没有安装 passt（pasta）" if ZH else "passt (pasta) is not installed",
     "resolution": "游戏分辨率" if ZH else "Game resolution",
     "fps": "帧率限制" if ZH else "Frame-rate limit",
     "extra_args": "额外参数" if ZH else "Extra arguments",
@@ -780,6 +785,7 @@ def app_cache_entry(prefix: Path, app: dict[str, str]) -> dict[str, str]:
         "gamescope_fsr": app.get("gamescope_fsr", "0"),
         "gamescope_args": app.get("gamescope_args", ""),
         "mangohud": app.get("mangohud", "0"),
+        "wayland": app.get("wayland", "0"),
         "env_vars": app.get("env_vars", ""),
         "source": app.get("source", "configured"),
         "name": app_display_name(app),
@@ -1215,6 +1221,11 @@ checkbutton check:checked {
   border-color: @accent_bg_color;
   color: @accent_fg_color;
 }
+switch:checked {
+  background-color: @accent_bg_color;
+  background-image: none;
+  border-color: @accent_bg_color;
+}
 progressbar trough {
   background-color: alpha(@theme_fg_color, 0.14);
   border-radius: 999px;
@@ -1349,7 +1360,7 @@ def scan_apps(prefix: Path) -> list[dict[str, str]]:
             if target_path:
                 shortcut_targets.add(str(target_path.resolve(strict=False)))
             shortcut_cache = read_key_values(cache_file_for_path(lnk))
-            apps.append({
+            app = {
                 "name": lnk.stem,
                 "display_name": shortcut_cache.get("name", lnk.stem),
                 "source": source,
@@ -1357,7 +1368,9 @@ def scan_apps(prefix: Path) -> list[dict[str, str]]:
                 "target_exe": str(target_path) if target_path else "",
                 "file": str(cache_file_for_path(lnk)) if shortcut_cache else "",
                 "kind": "shortcut",
-            })
+            }
+            app.update({key: shortcut_cache[key] for key in CONFIG_KEYS if key in shortcut_cache})
+            apps.append(app)
     for entry in collect_cache_entries():
         entry_prefix = entry.get("prefix", "")
         exe = entry.get("exe", "")
@@ -1386,6 +1399,7 @@ def scan_apps(prefix: Path) -> list[dict[str, str]]:
             "gamescope_fsr": entry.get("gamescope_fsr", "0"),
             "gamescope_args": entry.get("gamescope_args", ""),
             "mangohud": entry.get("mangohud", "0"),
+            "wayland": entry.get("wayland", "0"),
             "env_vars": entry.get("env_vars", ""),
             "kind": "saved-config",
         })
@@ -1590,8 +1604,14 @@ def scan_processes(prefix: Path) -> list[dict[str, str]]:
             name = (proc / "comm").read_text(errors="replace").strip()
         except OSError:
             name = ""
+        try:
+            exe = os.readlink(proc / "exe")
+        except OSError:
+            exe = ""
         result.append({
             "pid": str(pid),
+            "ppid": str(process_parent(pid)),
+            "exe": exe,
             "name": name,
             "command": command or name,
             "age": process_start_time(pid),
@@ -1602,11 +1622,90 @@ def scan_processes(prefix: Path) -> list[dict[str, str]]:
     return sorted(result, key=lambda item: int(item["pid"]))
 
 
+# Wine's own processes serve every program of the prefix, but carry the
+# app ID of whichever program started the session first.
+WINE_SESSION_PROCESSES = {
+    "wineserver", "services.exe", "winedevice.exe", "explorer.exe", "plugplay.exe",
+    "svchost.exe", "rpcss.exe", "tabtip.exe", "csrss.exe", "lsass.exe",
+}
+
+CONFIG_KEYS = (
+    "prefix", "runner", "gamescope", "gamescope_fullscreen", "gamescope_res", "gamescope_fps",
+    "gamescope_fsr", "gamescope_args", "mangohud", "wayland", "env_vars",
+)
+
+DEFAULT_RUNNER_DIR = "WE-Proton Latest"
+
+
+def prefix_runner(prefix: Path) -> str:
+    """The proton the prefix was last set up with, as Proton records it."""
+    try:
+        line = (prefix / "config_info").read_text(errors="ignore").splitlines()[1]
+    except (OSError, IndexError):
+        return ""
+    proton = Path(line).parent.parent.parent / "proton"
+    return str(proton.resolve()) if proton.is_file() else ""
+
+
+def preferred_runner_path(runners: list[dict[str, str]]) -> str:
+    for runner in runners:
+        if runner.get("name") == DEFAULT_RUNNER_DIR:
+            return runner.get("path", "")
+    return runners[0]["path"] if runners else ""
+
+
+def prefix_netns_enabled(prefix: Path) -> bool:
+    try:
+        return "netns=1" in (prefix / ".shorin-proton-wrapper.conf").read_text(errors="ignore").splitlines()
+    except OSError:
+        return False
+
+
+def process_parent(pid: int) -> int:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(errors="replace")
+        return int(stat[stat.rindex(")") + 2:].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def session_host_pids(procs: list[dict[str, str]]) -> set[str]:
+    """The launcher of the program that started the session: the Steam
+    runtime adopts the wineserver there, so it stays until the session ends
+    and must not be ended with that program."""
+    hosts = set()
+    for proc in procs:
+        if proc.get("name") != "wineserver":
+            continue
+        pid = process_parent(int(proc["pid"]))
+        for _ in range(64):
+            if pid <= 1:
+                break
+            hosts.add(str(pid))
+            pid = process_parent(pid)
+    return hosts
+
+
+def is_wine_process(proc: dict[str, str]) -> bool:
+    """A Windows program, run by Wine's loader."""
+    return Path(proc.get("exe", "")).name.startswith("wine") and proc.get("name") != "wineserver"
+
+
+def app_own_processes(procs: list[dict[str, str]], app_id: str, hosts: set[str]) -> list[dict[str, str]]:
+    return [
+        proc for proc in procs
+        if proc.get("app_id") == app_id and proc.get("name") not in WINE_SESSION_PROCESSES
+        and proc["pid"] not in hosts
+    ]
+
+
 def running_apps_for_prefix(prefix: Path) -> dict[str, dict[str, object]]:
     running: dict[str, dict[str, object]] = {}
-    for proc in scan_processes(prefix):
+    procs = scan_processes(prefix)
+    hosts = session_host_pids(procs)
+    for proc in procs:
         app_id = proc.get("app_id", "")
-        if not app_id:
+        if not app_id or proc.get("name") in WINE_SESSION_PROCESSES or proc["pid"] in hosts:
             continue
         item = running.setdefault(app_id, {"pids": [], "log": proc.get("log", ""), "path": proc.get("app_path", "")})
         item["pids"].append(proc["pid"])
@@ -1647,7 +1746,7 @@ def write_cache_entry(entry: dict[str, str]) -> None:
     entry["file"] = str(path)
     keys = [
         "name", "exe", "prefix", "runner", "gamescope", "gamescope_fullscreen", "gamescope_res",
-        "gamescope_fps", "gamescope_fsr", "gamescope_args", "mangohud", "env_vars", "source",
+        "gamescope_fps", "gamescope_fsr", "gamescope_args", "mangohud", "wayland", "env_vars", "source",
     ]
     path.write_text(
         "".join(f"{key}={quote(entry.get(key, '')) if key == 'env_vars' else entry.get(key, '')}\n" for key in keys),
@@ -1685,6 +1784,8 @@ class ManagerApp(Gtk.Application):
         self.update_button = None
         self.update_check_source_id = 0
         self.update_running = False
+        self.netns_switch = None
+        self.syncing_netns = False
 
     def do_activate(self):
         sync_color_scheme()
@@ -1824,6 +1925,9 @@ class ManagerApp(Gtk.Application):
         label.add_css_class("prefix-label")
         combo = Gtk.ComboBoxText()
         combo.set_hexpand(True)
+        # a long prefix path must not keep the window from getting narrower
+        for cell in combo.get_cells():
+            cell.set_property("ellipsize", Pango.EllipsizeMode.MIDDLE)
         combo.connect("changed", self.on_prefix_combo_changed)
         browse = Gtk.Button(label=TEXT["browse"])
         browse.connect("clicked", lambda _b, selector=combo: self.browse_prefix(selector))
@@ -1850,6 +1954,7 @@ class ManagerApp(Gtk.Application):
         if page == "apps":
             self.update_button = self.create_update_button()
             box.append(self.update_button)
+            box.append(self.netns_toggle())
             box.append(self.cache_dirs_menu_button())
         path_label = None
         if page == "processes":
@@ -1991,7 +2096,11 @@ class ManagerApp(Gtk.Application):
         box.set_hexpand(True)
         title_label = Gtk.Label(label=title, xalign=0, wrap=True)
         title_label.add_css_class("heading")
-        detail_label = Gtk.Label(label=detail, xalign=0, wrap=True)
+        # one line: a long path is shortened in the middle, the tooltip has it all
+        detail_label = Gtk.Label(label=detail, xalign=0)
+        detail_label.set_single_line_mode(True)
+        detail_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        detail_label.set_tooltip_text(detail)
         detail_label.add_css_class("dim-label")
         detail_label.set_selectable(True)
         box.append(title_label)
@@ -2123,6 +2232,43 @@ class ManagerApp(Gtk.Application):
         box.append(delete)
         menu.set_child(box)
         return self.compact_menu_button(menu)
+
+    def netns_toggle(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.set_valign(Gtk.Align.CENTER)
+        label = Gtk.Label(label=TEXT["netns"])
+        label.add_css_class("prefix-label")
+        switch = Gtk.Switch()
+        switch.set_valign(Gtk.Align.CENTER)
+        has_pasta = shutil_which("pasta") is not None
+        switch.set_sensitive(has_pasta)
+        box.set_tooltip_text(TEXT["netns_desc"] if has_pasta else TEXT["netns_missing"])
+        switch.connect("state-set", self.on_netns_state_set)
+        self.netns_switch = switch
+        box.append(label)
+        box.append(switch)
+        return box
+
+    def on_netns_state_set(self, _switch: Gtk.Switch, state: bool) -> bool:
+        if self.syncing_netns:
+            return False
+        prefix = self.page_prefix("apps")
+        result = subprocess.run([self.wrapper, "-p", str(prefix), "--netns", "on" if state else "off"],
+                                check=False, text=True, capture_output=True)
+        if result.returncode != 0:
+            display_message(self.window, TEXT["error"], (result.stderr or result.stdout).strip())
+            return True  # keep the switch where it was
+        self.set_status(f'{TEXT["netns"]}: {prefix}')
+        return False
+
+    def sync_netns_switch(self, prefix: Path) -> None:
+        if not self.netns_switch:
+            return
+        enabled = prefix_netns_enabled(prefix)
+        if self.netns_switch.get_active() != enabled:
+            self.syncing_netns = True
+            self.netns_switch.set_active(enabled)
+            self.syncing_netns = False
 
     def create_update_button(self) -> Gtk.Button:
         button = Gtk.Button(label=TEXT["update_available"])
@@ -2297,6 +2443,7 @@ class ManagerApp(Gtk.Application):
 
     def refresh_apps(self, force: bool = False) -> None:
         prefix = self.page_prefix("apps")
+        self.sync_netns_switch(prefix)
         apps = scan_apps(prefix)
         running = running_apps_for_prefix(prefix)
         signature = self.apps_state_signature(prefix, apps, running)
@@ -2327,7 +2474,7 @@ class ManagerApp(Gtk.Application):
                 run = self.compact_button(TEXT["run"], "run-button")
                 run.connect("clicked", lambda _b, item=app, item_prefix=prefix: self.run_path(item["path"], str(item_prefix), item.get("runner", "")))
                 box.append(run)
-            if app.get("kind") == "saved-config":
+            if app.get("kind") in ("saved-config", "shortcut"):
                 config = self.compact_button(TEXT["reconfigure"])
                 config.connect("clicked", lambda _b, item=app: self.edit_cache_entry(item))
                 box.append(config)
@@ -2383,10 +2530,7 @@ class ManagerApp(Gtk.Application):
             row = Gtk.ListBoxRow()
             box = self.row_box()
             title = f"{proc['name']}  PID {proc['pid']}  {proc['age']}"
-            command = proc["command"]
-            if len(command) > 120:
-                command = command[:117] + "..."
-            box.append(self.text_column(title, command))
+            box.append(self.text_column(title, proc["command"]))
             force = self.compact_button("", "menu-item-danger")
             force.add_css_class("icon-button")
             force.set_size_request(34, 34)
@@ -2489,7 +2633,7 @@ class ManagerApp(Gtk.Application):
             "name": inferred_exe_name(expand_path(exe_path), prefix),
             "exe": exe_path,
             "prefix": str(prefix),
-            "runner": runners[0]["path"] if runners else "",
+            "runner": prefix_runner(prefix) or preferred_runner_path(runners),
             "gamescope": "0",
             "gamescope_fullscreen": "1",
             "gamescope_res": "",
@@ -2497,6 +2641,7 @@ class ManagerApp(Gtk.Application):
             "gamescope_fsr": "0",
             "gamescope_args": "",
             "mangohud": "0",
+            "wayland": "0",
             "env_vars": "",
             "source": "install-dir",
         }
@@ -2573,18 +2718,31 @@ class ManagerApp(Gtk.Application):
         self.refresh_after_mutation()
 
     def close_running_app(self, app_id: str) -> None:
-        killed = 0
-        for proc in scan_processes(self.page_prefix("apps")):
-            if proc.get("app_id") != app_id:
-                continue
+        """Ask the app's Windows processes to end, and kill what is left a few
+        seconds later; its launcher then exits on its own. Wine's processes and
+        the launcher hosting them serve the other programs too. Only an app
+        still starting, with no Windows process yet, has its launcher ended."""
+        everything = scan_processes(self.page_prefix("apps"))
+        own = app_own_processes(everything, app_id, session_host_pids(everything))
+        procs = [proc for proc in own if is_wine_process(proc)] or own
+        for proc in procs:
             try:
-                kill_pid(int(proc["pid"]), True)
-                killed += 1
+                kill_pid(int(proc["pid"]))
             except OSError:
                 pass
-        self.set_status(f"{TEXT['close']}: {killed}")
+        self.set_status(f"{TEXT['close']}: {len(procs)}")
+        GLib.timeout_add_seconds(3, self.finish_closing_app, procs)
+
+    def finish_closing_app(self, procs: list[dict[str, str]]) -> bool:
+        for proc in procs:
+            try:
+                if (Path("/proc") / proc["pid"] / "comm").read_text().strip() == proc["name"]:
+                    kill_pid(int(proc["pid"]), True)
+            except OSError:
+                pass
         self.refresh_apps(force=True)
         self.refresh_processes()
+        return False
 
     def show_log_dialog(self, title: str, log_path: Path | None) -> None:
         if not log_path or not log_path.exists():
@@ -2635,10 +2793,11 @@ class ManagerApp(Gtk.Application):
 
     def on_create_config(self, _button) -> None:
         runners = load_runners(self.wrapper)
+        prefix = self.page_prefix("apps")
         entry = {
             "exe": "",
-            "prefix": str(self.page_prefix("apps")),
-            "runner": runners[0]["path"] if runners else "",
+            "prefix": str(prefix),
+            "runner": prefix_runner(prefix) or preferred_runner_path(runners),
             "gamescope": "0",
             "gamescope_fullscreen": "1",
             "gamescope_res": "",
@@ -2646,6 +2805,7 @@ class ManagerApp(Gtk.Application):
             "gamescope_fsr": "0",
             "gamescope_args": "",
             "mangohud": "0",
+            "wayland": "0",
             "env_vars": "",
             "source": "configured",
         }
@@ -2713,7 +2873,10 @@ class ManagerApp(Gtk.Application):
 
         runners = load_runners(self.wrapper)
         runner_label_widget = Gtk.Label(label=TEXT["runner"], xalign=0)
-        runner_field = self.runner_combo(runners, entry.get("runner", ""))
+        current_runner = (entry.get("runner")
+                          or prefix_runner(expand_path(entry.get("prefix") or self.page_prefix("apps")))
+                          or preferred_runner_path(runners))
+        runner_field = self.runner_combo(runners, current_runner)
         base_grid.attach(runner_label_widget, 0, 2, 1, 1)
         base_grid.attach(runner_field, 1, 2, 1, 1)
         widgets["runner"] = runner_field
@@ -2759,8 +2922,18 @@ class ManagerApp(Gtk.Application):
         mangohud_desc = Gtk.Label(label=TEXT["mangohud_desc"], xalign=0, wrap=True)
         mangohud_desc.add_css_class("dim-label")
         other_grid.attach(mangohud_desc, 0, 1, 2, 1)
-        add_entry(other_grid, 2, "env_vars", TEXT["env_vars"])
-        widgets.update({"gamescope": gamescope, "gamescope_fullscreen": fullscreen, "gamescope_fsr": fsr, "mangohud": mangohud})
+        wayland = Gtk.CheckButton(label=TEXT["wayland"])
+        wayland.set_active(entry.get("wayland", "0") == "1")
+        other_grid.attach(wayland, 0, 2, 2, 1)
+        wayland_desc = Gtk.Label(label=TEXT["wayland_desc"], xalign=0, wrap=True)
+        wayland_desc.add_css_class("dim-label")
+        other_grid.attach(wayland_desc, 0, 3, 2, 1)
+        add_entry(other_grid, 4, "env_vars", TEXT["env_vars"])
+        # Gamescope only offers X11
+        gamescope.connect("toggled", lambda button: wayland.set_sensitive(not button.get_active()))
+        wayland.set_sensitive(not gamescope.get_active())
+        widgets.update({"gamescope": gamescope, "gamescope_fullscreen": fullscreen, "gamescope_fsr": fsr,
+                        "mangohud": mangohud, "wayland": wayland})
 
         dialog.connect("response", lambda d, response, item=entry, fields=widgets: self.on_cache_edit_response(d, response, item, fields))
         dialog.present()
@@ -2777,6 +2950,9 @@ class ManagerApp(Gtk.Application):
             entry["env_vars"] = widgets["env_vars"].get_text().strip()
             for key in ("gamescope", "gamescope_fullscreen", "gamescope_fsr", "mangohud"):
                 entry[key] = "1" if widgets[key].get_active() else "0"
+            entry["wayland"] = "1" if widgets["wayland"].get_active() and entry["gamescope"] == "0" else "0"
+            # the name shown in the list, which may have been renamed
+            entry["name"] = entry.get("display_name") or entry.get("name", "")
             entry["source"] = "configured"
             write_cache_entry(entry)
             self.set_status(f"{TEXT['reconfigure']}: {entry.get('exe', '')}")

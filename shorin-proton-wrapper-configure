@@ -59,6 +59,8 @@ TEXT = {
     "fsr": "FSR 超分辨率" if ZH else "FSR upscaling",
     "mangohud": "MangoHud" if ZH else "MangoHud",
     "mangohud_desc": "显示帧数和性能占用" if ZH else "Show FPS and performance usage",
+    "wayland": "以 Wayland 运行" if ZH else "Run on Wayland",
+    "wayland_desc": "使用 Wine 的 Wayland 驱动。开启 Gamescope 时不生效；前置环境里已有程序在运行时，沿用它们的显示方式。" if ZH else "Use Wine's Wayland driver. Not with Gamescope; while programs of the prefix are running, it follows how they are shown.",
     "env_vars": "环境变量" if ZH else "Environment variables",
     "env_vars_desc": "例如: DXVK_ASYNC=1 PROTON_NO_ESYNC=1" if ZH else "Example: DXVK_ASYNC=1 PROTON_NO_ESYNC=1",
     "mangohud_missing": "未安装 MangoHud" if ZH else "MangoHud is not installed",
@@ -80,10 +82,11 @@ TEXT = {
 
 COMMON_RESOLUTIONS = ["1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160"]
 COMMON_FPS = ["30", "40", "45", "60", "90", "120", "144", "165", "240"]
+# The first is what a program gets when nothing else is chosen.
 DEFAULT_RUNNERS = (
+    {"id": "we", "name": "WE-Proton", "dir_name": "WE-Proton Latest"},
     {"id": "dw", "name": "DW-Proton", "dir_name": "DW-Proton Latest"},
     {"id": "ge", "name": "Proton-GE", "dir_name": "Proton-GE Latest"},
-    {"id": "we", "name": "WE-Proton", "dir_name": "WE-Proton Latest"},
 )
 
 
@@ -356,6 +359,16 @@ def has_mangohud() -> bool:
     return shutil.which("mangohud") is not None
 
 
+def prefix_runner(prefix: Path) -> str:
+    """The proton the prefix was last set up with, as Proton records it."""
+    try:
+        line = (prefix / "config_info").read_text(errors="ignore").splitlines()[1]
+    except (OSError, IndexError):
+        return ""
+    proton = Path(line).parent.parent.parent / "proton"
+    return str(proton.resolve()) if proton.is_file() else ""
+
+
 def env_from_text(value: str) -> dict[str, str]:
     env = {}
     try:
@@ -399,14 +412,22 @@ def read_cache(path: Path):
             "gamescope_fsr": data.get("gamescope_fsr", "0"),
             "gamescope_args": data.get("gamescope_args", ""),
             "mangohud": "1" if data.get("mangohud", "0") == "1" and has_mangohud() else "0",
+            "wayland": "1" if data.get("wayland", "0") == "1" else "0",
             "env_vars": unquote(data.get("env_vars", "")),
         }
     return None
 
 
 def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
+    # keep the name the manager shows, which may have been renamed
+    name = ""
+    if path.is_file():
+        for line in path.read_text(errors="ignore").splitlines():
+            if line.startswith("name="):
+                name = line.split("=", 1)[1]
     path.write_text(
-        f"exe={exe}\n"
+        (f"name={name}\n" if name else "")
+        + f"exe={exe}\n"
         f"prefix={prefix}\n"
         f"runner={runner}\n"
         f"gamescope={options.get('gamescope', '0')}\n"
@@ -416,7 +437,9 @@ def write_cache(path: Path, exe: Path, prefix: str, runner: str, options: dict):
         f"gamescope_fsr={options.get('gamescope_fsr', '0')}\n"
         f"gamescope_args={options.get('gamescope_args', '')}\n"
         f"mangohud={options.get('mangohud', '0')}\n"
+        f"wayland={options.get('wayland', '0')}\n"
         f"env_vars={quote(options.get('env_vars', ''))}\n"
+        "source=configured\n"
     )
 
 
@@ -515,6 +538,8 @@ def gamescope_args(options: dict) -> list[str]:
             args.extend(["--args", options["gamescope_args"]])
     if options.get("mangohud") == "1":
         args.append("--mangohud")
+    if options.get("wayland") == "1" and options.get("gamescope") != "1":
+        args.append("--wayland")
     return args
 
 
@@ -561,6 +586,7 @@ class SelectorApp(Gtk.Application):
         self.fsr_check = None
         self.mangohud_check = None
         self.mangohud_missing_label = None
+        self.wayland_check = None
         self.env_vars_entry = None
         self.extra_args_entry = None
 
@@ -728,6 +754,8 @@ class SelectorApp(Gtk.Application):
         other_card = card(TEXT["display"])
         other_text = []
         other_text.append(TEXT["mangohud"] + ": " + ("开" if ZH and cache.get("mangohud") == "1" else "关" if ZH else "on" if cache.get("mangohud") == "1" else "off"))
+        wayland_on = cache.get("wayland") == "1" and cache.get("gamescope") != "1"
+        other_text.append(TEXT["wayland"] + ": " + (("开" if wayland_on else "关") if ZH else ("on" if wayland_on else "off")))
         if cache.get("env_vars"):
             other_text.append(TEXT["env_vars"] + ": " + cache["env_vars"])
         other = Gtk.Label(label="\n".join(other_text), xalign=0, wrap=True)
@@ -903,6 +931,14 @@ class SelectorApp(Gtk.Application):
             display_box.attach(self.mangohud_missing_label, 0, 2, 2, 1)
             next_row = 3
 
+        self.wayland_check = Gtk.CheckButton(label=TEXT["wayland"])
+        self.wayland_check.set_active((initial or {}).get("wayland", "0") == "1")
+        display_box.attach(self.wayland_check, 0, next_row, 2, 1)
+        wayland_desc = Gtk.Label(label=TEXT["wayland_desc"], xalign=0, wrap=True)
+        wayland_desc.add_css_class("dim-label")
+        display_box.attach(wayland_desc, 0, next_row + 1, 2, 1)
+        next_row += 2
+
         env_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         env_label = Gtk.Label(label=TEXT["env_vars"], xalign=0)
         env_label.set_size_request(88, -1)
@@ -936,11 +972,17 @@ class SelectorApp(Gtk.Application):
         self.runner_combo.remove_all()
         self.selected_runner = None
         self.selected_runner_install_id = None
-        active_index = 0
+        if not active_path and self.prefix_entry:
+            active_path = prefix_runner(Path(self.prefix_entry.get_text()).expanduser())
+        active_index = None
         for index, runner in enumerate(self.runners):
             self.runner_combo.append(str(index), runner_label(runner))
             if active_path and runner.get("path") == active_path:
                 active_index = index
+        if active_index is None:  # the default runner, installed or offered for download
+            default_id = DEFAULT_RUNNERS[0]["id"]
+            active_index = next((index for index, runner in enumerate(self.runners)
+                                 if default_id in (runner.get("default_id"), runner.get("install_id"))), 0)
         if self.runners:
             self.runner_combo.set_active_id(str(active_index))
             self.set_selected_runner(self.runners[active_index])
@@ -1023,6 +1065,8 @@ class SelectorApp(Gtk.Application):
 
     def on_gamescope_toggled(self, button):
         active = button.get_active()
+        if self.wayland_check:  # Gamescope only offers X11
+            self.wayland_check.set_sensitive(not active)
         if self.fullscreen_check:
             self.fullscreen_check.set_sensitive(active)
             if not active:
@@ -1064,6 +1108,7 @@ class SelectorApp(Gtk.Application):
             "gamescope_fsr": "1" if self.fsr_check and self.fsr_check.get_active() else "0",
             "gamescope_args": self.extra_args_entry.get_text().strip() if self.extra_args_entry else "",
             "mangohud": "1" if self.mangohud_check and self.mangohud_check.get_active() else "0",
+            "wayland": "1" if self.wayland_check and self.wayland_check.get_active() and not enabled else "0",
             "env_vars": self.env_vars_entry.get_text().strip() if self.env_vars_entry else "",
         }
 
