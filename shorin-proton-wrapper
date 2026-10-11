@@ -1501,6 +1501,9 @@ Close the programs running with it, then update again."
     return 1
   fi
   printf '%s\n' "$tag" > "$target/.shorin-proton-wrapper-version"
+  if [[ "$VERSION" == "latest" ]]; then
+    pin_runner_tool_name "$target" "$product_name" "$tag"
+  fi
   rm -rf "$extract_dir"
   extract_dir=""
 
@@ -1512,6 +1515,32 @@ Close the programs running with it, then update again."
   fi
 
   printf 'Installed: %s\n' "$target/proton"
+}
+
+# Steam remembers each game's compatibility tool by the tool's internal name
+# in compatibilitytool.vdf, which a release sets to its version. A "Latest"
+# runner is replaced on every update, and a new name each time would leave the
+# games set to it without a tool, so it keeps one name: its folder's, and the
+# version goes into the name Steam shows.
+pin_runner_tool_name() {
+  local dir="$1" name="$2" version="$3"
+  [[ -f "$dir/compatibilitytool.vdf" ]] || return 0
+  python3 - "$dir/compatibilitytool.vdf" "${name// /-}" "$name${version:+ ($version)}" <<'PY'
+import re
+import sys
+
+path, internal, display = sys.argv[1:]
+with open(path, encoding="utf-8") as file:
+    text = file.read()
+# the first key in "compat_tools" is the tool's internal name
+match = re.search(r'"compat_tools"\s*\{\s*"([^"]+)"', text)
+if not match:
+    sys.exit(0)
+text = text[:match.start(1)] + internal + text[match.end(1):]
+text = re.sub(r'("display_name"\s+)"[^"]*"', lambda m: m.group(1) + '"' + display + '"', text, count=1)
+with open(path, "w", encoding="utf-8") as file:
+    file.write(text)
+PY
 }
 
 # Whether release $2 is newer than the installed version $1. A runner built
@@ -1548,9 +1577,11 @@ update_runner() {
         current="$(installed_runner_version "$target" "$product" || true)"
         if [[ "$current" == "$tag" ]]; then
           printf 'Already latest: %s (%s)\n' "$target" "$tag"
+          pin_runner_tool_name "$target" "$(runner_dir_name "$product")" "$current"
           skipped=1
         elif [[ -n "$current" ]] && ! version_newer "$current" "$tag"; then
           printf 'Newer than the latest release, kept: %s (%s, latest %s)\n' "$target" "$current" "$tag"
+          pin_runner_tool_name "$target" "$(runner_dir_name "$product")" "$current"
           skipped=1
         else
           printf 'Updating: %s\n' "$target"

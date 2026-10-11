@@ -63,7 +63,7 @@ shorin-proton-wrapper %command%
 
 游戏就不再用 Steam 给它建的前置环境，而是作为 `~/.proton` 里的程序运行（另一个前置环境用 `shorin-proton-wrapper -p 前置环境 %command%`）：和那里的其他程序共用一个会话、运行器和独立网络，比如让加速器接管 Steam 游戏。
 
-- 游戏的`兼容性`里仍要选一个 Proton（建议 WE-Proton Latest），否则 Steam 不会启动 Windows 游戏；实际运行用的是前置环境的运行器；
+- 游戏的`兼容性`里仍要选一个 Proton（建议 WE-Proton Latest），否则 Steam 不会启动 Windows 游戏；实际运行用的是前置环境的运行器。wrapper 装的 Latest 运行器在 Steam 里的名字是固定的（版本号显示在括号里），更新之后这个选择不会丢；
 - 存在 Windows 用户目录（AppData、文档）里的存档会在 `~/.proton` 里。Steam 云存档同步的是 Steam 自己的前置环境（`steamapps/compatdata/<AppID>`）；
 - 游戏会出现在管理器的应用列表里，标着「Steam」：在那里点「运行」会交给 Steam 启动（`steam://rungameid/<AppID>`），配置、日志照常可用。
 
