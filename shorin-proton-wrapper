@@ -2204,9 +2204,14 @@ session_start() {
   mkdir -p "$(dirname "$log")"
   mac="$(namespace_mac_address)"
   printf -- '--- %s %s\n' "$(date '+%F %T')" "$PREFIX" >> "$log"
-  setsid env -u SHORIN_PROTON_WRAPPER_APP_ID -u SHORIN_PROTON_WRAPPER_APP_PATH -u SHORIN_PROTON_WRAPPER_LOG \
+  # Games reach the Steam client on 127.0.0.1:57343, the namespace's own
+  # loopback; pasta forwards automatically only the host's ports outside the
+  # ephemeral range, which 57343 is in, so that one is named too. A game Steam
+  # starts brings Steam's overlay in LD_PRELOAD, which the namespace's own
+  # programs must not get.
+  setsid env -u SHORIN_PROTON_WRAPPER_APP_ID -u SHORIN_PROTON_WRAPPER_APP_PATH -u SHORIN_PROTON_WRAPPER_LOG -u LD_PRELOAD \
     SHORIN_PROTON_WRAPPER_PREFIX="$PREFIX" \
-    pasta --config-net --ns-mac-addr "$mac" -f --no-pidns -- "$SELF_PATH" --session-keeper "$dir" \
+    pasta --config-net --ns-mac-addr "$mac" -T auto -T 57343 -f --no-pidns -- "$SELF_PATH" --session-keeper "$dir" \
     >> "$log" 2>&1 < /dev/null {SESSION_LOCK_FD}>&- &
   for ((i = 0; i < 75; i++)); do
     if SESSION_KEEPER_PID="$(session_keeper_pid "$dir")"; then
