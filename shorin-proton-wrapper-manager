@@ -95,6 +95,7 @@ TEXT = {
     "no_cache": "没有保存过的 exe 配置。" if ZH else "No saved exe configs.",
     "exported": "已导出" if ZH else "Exported",
     "removed": "已删除" if ZH else "Removed",
+    "shortcut_still_listed": "快捷方式在前缀的开始菜单或桌面里，仍会列出" if ZH else "the shortcut is in the prefix's start menu or desktop, so it is still listed",
     "done": "完成" if ZH else "Done",
     "error": "错误" if ZH else "Error",
     "status": "状态" if ZH else "Status",
@@ -1512,6 +1513,36 @@ def app_last_used(prefix: Path, path: str | Path) -> float:
         return 0.0
 
 
+def app_cache_files(prefix: Path, app: dict[str, str]) -> set[Path]:
+    """Every settings file of an app in the prefix: the one the row shows, a
+    shortcut's and its program's, and those written for the same program
+    under another spelling of its path, which the list shows as one."""
+    paths = [Path(app["path"])] + ([Path(app["target_exe"])] if app.get("target_exe") else [])
+    files = {Path(app["file"])} if app.get("file") else set()
+    files.update(cache_file_for_path(path) for path in paths)
+    real = {str(expand_path(path).resolve(strict=False)) for path in paths}
+    for conf in association_dir().glob("*.conf"):
+        data = read_key_values(conf)
+        exe = data.get("exe", "")
+        if not exe or expand_path(data.get("prefix", Path.home() / ".proton")) != expand_path(prefix):
+            continue
+        if str(expand_path(exe).resolve(strict=False)) in real:
+            files.add(conf)
+    return files
+
+
+def mark_app_started(prefix: Path, path: str | Path) -> None:
+    """Date the app's log folder now, as starting it through the wrapper does,
+    so that the list puts the app first at once: the wrapper itself gets there
+    only after a moment, and not under this app's name for a game Steam starts."""
+    directory = app_log_dir(app_identity(expand_path(prefix), Path(path)))
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        os.utime(directory)
+    except OSError:
+        pass
+
+
 def app_sort_key(app: dict) -> tuple:
     """Programs first, the most recently used at the top and those never
     used by name; then uninstallers, and last the shortcuts whose program is
@@ -1985,11 +2016,21 @@ def app_location(prefix: Path, app: dict[str, str]) -> str:
 
 
 class SearchRow(Gtk.ListBoxRow):
-    """A list row that the page's search matches against its texts."""
+    """A list row that the page's search matches against its texts. The key
+    names what the row is about, so that a rebuilt list finds its row again."""
 
-    def __init__(self, *texts: str):
+    def __init__(self, *texts: str, key: str = ""):
         super().__init__()
         self.search_text = " ".join(texts).casefold()
+        self.key = key
+
+
+def widget_descendants(widget: Gtk.Widget):
+    child = widget.get_first_child()
+    while child:
+        yield child
+        yield from widget_descendants(child)
+        child = child.get_next_sibling()
 
 
 def row_matches(row: Gtk.ListBoxRow, query: str) -> bool:
@@ -2405,6 +2446,62 @@ class ManagerApp(Gtk.Application):
                 self.refresh_apps()
         return True
 
+    def save_list_view(self, list_box: Gtk.ListBox) -> dict:
+        """Where a list is scrolled to and which row and button have the focus,
+        for restore_list_view() after the rows are rebuilt."""
+        scrolled = list_box.get_ancestor(Gtk.ScrolledWindow)
+        adjustment = scrolled.get_vadjustment() if scrolled else None
+        view = {"adjustment": adjustment, "value": adjustment.get_value() if adjustment else 0.0,
+                "key": "", "index": -1, "label": None}
+        focus = self.window.get_focus() if self.window else None
+        if focus and focus.is_ancestor(list_box):
+            row = focus if isinstance(focus, Gtk.ListBoxRow) else focus.get_ancestor(Gtk.ListBoxRow)
+            if row:
+                view["key"] = getattr(row, "key", "")
+                view["index"] = row.get_index()
+            if isinstance(focus, Gtk.Button):
+                view["label"] = focus.get_label()
+            # once the focused row is gone GTK focuses the first row, and the
+            # list scrolls up to it
+            self.window.set_focus(None)
+        return view
+
+    def restore_list_view(self, list_box: Gtk.ListBox, view: dict) -> None:
+        adjustment = view["adjustment"]
+        if not adjustment:
+            return
+        state = {"done": False, "handler": 0}
+
+        def apply(*_args) -> bool:
+            # the rebuilt rows get their size on the next frame, until then the
+            # list can't be scrolled back
+            if state["done"]:
+                return False
+            state["done"] = True
+            adjustment.disconnect(state["handler"])
+            upper = adjustment.get_upper() - adjustment.get_page_size()
+            adjustment.set_value(max(0.0, min(view["value"], upper)))
+            # the focus goes back only to a row that stayed where it was;
+            # following a row that moved would scroll the list
+            row = list_box.get_row_at_index(view["index"]) if view["key"] else None
+            if row and getattr(row, "key", "") == view["key"]:
+                target = row
+                if view["label"]:
+                    target = next((button for button in widget_descendants(row)
+                                   if isinstance(button, Gtk.Button) and button.get_label() == view["label"]), row)
+                # the row is in view already; scrolling to the focus would go by
+                # the new rows' positions before they are final
+                viewport = list_box.get_ancestor(Gtk.Viewport)
+                if viewport:
+                    viewport.set_scroll_to_focus(False)
+                target.grab_focus()
+                if viewport:
+                    GLib.idle_add(lambda: (viewport.set_scroll_to_focus(True), False)[1])
+            return False
+
+        state["handler"] = adjustment.connect("changed", apply)
+        GLib.timeout_add(100, apply)
+
     def clear_list(self, list_box: Gtk.ListBox) -> None:
         child = list_box.get_first_child()
         while child:
@@ -2767,7 +2864,6 @@ class ManagerApp(Gtk.Application):
                 app.get("runner", ""),
                 app.get("kind", ""),
                 bool(running_app),
-                tuple(sorted(running_app.get("pids", []))) if running_app else (),
                 str(log_path or ""),
             ))
         return (str(prefix), tuple(items))
@@ -2792,7 +2888,12 @@ class ManagerApp(Gtk.Application):
         if not force and signature == self.apps_signature:
             return
         self.apps_signature = signature
+        view = self.save_list_view(self.apps_list)
         self.clear_list(self.apps_list)
+        self.fill_apps(prefix, apps, running)
+        self.restore_list_view(self.apps_list, view)
+
+    def fill_apps(self, prefix: Path, apps: list[dict[str, str]], running: dict[str, dict[str, object]]) -> None:
         if not apps:
             self.apps_list.append(self.empty_row(TEXT["no_apps"]))
             return
@@ -2806,7 +2907,7 @@ class ManagerApp(Gtk.Application):
             detail = f'{TEXT["target_missing"]} · {location}' if missing else location
             if steam_appid:
                 detail = f"Steam · {detail}"
-            row = SearchRow(app_display_name(app), app.get("name", ""), detail, app["path"])
+            row = SearchRow(app_display_name(app), app.get("name", ""), detail, app["path"], key=app_id)
             box = self.row_box()
             box.append(self.app_icon_widget(prefix, app))
             box.append(self.text_column(app_display_name(app), detail,
@@ -2825,7 +2926,8 @@ class ManagerApp(Gtk.Application):
                     # Steam signs the game in and passes its launch options,
                     # which bring it back to the wrapper
                     run.set_tooltip_text(TEXT["run_via_steam"])
-                    run.connect("clicked", lambda _b, appid=steam_appid: self.run_steam_game(appid))
+                    run.connect("clicked", lambda _b, appid=steam_appid, item=app, item_prefix=prefix:
+                                self.run_steam_game(appid, item["path"], str(item_prefix)))
                 else:
                     run.connect("clicked", lambda _b, item=app, item_prefix=prefix: self.run_path(item["path"], str(item_prefix), item.get("runner", "")))
                 box.append(run)
@@ -2847,13 +2949,18 @@ class ManagerApp(Gtk.Application):
         if not force and signature == self.install_dirs_signature:
             return
         self.install_dirs_signature = signature
+        view = self.save_list_view(self.install_dirs_list)
         self.clear_list(self.install_dirs_list)
+        self.fill_install_dirs(prefix, dirs)
+        self.restore_list_view(self.install_dirs_list, view)
+
+    def fill_install_dirs(self, prefix: Path, dirs: list[dict[str, object]]) -> None:
         if not dirs:
             self.install_dirs_list.append(self.empty_row(TEXT["no_install_dirs"]))
             return
         for item in dirs:
             path = Path(item["path"])
-            row = SearchRow(str(item.get("name", path.name)), windows_display_path(prefix, path))
+            row = SearchRow(str(item.get("name", path.name)), windows_display_path(prefix, path), key=str(path))
             box = self.row_box()
             detail = " · ".join([
                 windows_display_path(prefix, path),
@@ -2876,14 +2983,19 @@ class ManagerApp(Gtk.Application):
             self.install_dirs_list.append(row)
 
     def refresh_processes(self) -> None:
-        self.clear_list(self.process_list)
         processes = scan_processes(self.page_prefix("processes"))
+        view = self.save_list_view(self.process_list)
+        self.clear_list(self.process_list)
+        self.fill_processes(processes)
+        self.restore_list_view(self.process_list, view)
+
+    def fill_processes(self, processes: list[dict[str, str]]) -> None:
         if not processes:
             self.process_list.append(self.empty_row(TEXT["no_processes"]))
             return
         for proc in processes:
             # not the exe: for every Windows program that is Wine's loader
-            row = SearchRow(proc["name"], proc["pid"], proc["command"])
+            row = SearchRow(proc["name"], proc["pid"], proc["command"], key=str(proc["pid"]))
             box = self.row_box()
             title = f"{proc['name']}  PID {proc['pid']}  {proc['age']}"
             box.append(self.text_column(title, proc["command"]))
@@ -2932,12 +3044,16 @@ class ManagerApp(Gtk.Application):
             command.extend(["--runner", "we"])
         command.append(path)
         subprocess.Popen(command)
+        mark_app_started(Path(prefix) if prefix else self.current_prefix(), path)
         self.set_status(f"{TEXT['run']}: {path}")
+        self.refresh_apps(force=True)
         GLib.timeout_add(800, self.refresh_apps_once)
 
-    def run_steam_game(self, appid: str) -> None:
+    def run_steam_game(self, appid: str, path: str, prefix: str) -> None:
         subprocess.Popen(["xdg-open", f"steam://rungameid/{appid}"])
+        mark_app_started(Path(prefix), path)
         self.set_status(f"{TEXT['run_via_steam']}: {appid}")
+        self.refresh_apps(force=True)
         GLib.timeout_add(800, self.refresh_apps_once)
 
     def refresh_apps_once(self) -> bool:
@@ -3376,11 +3492,15 @@ class ManagerApp(Gtk.Application):
         self.refresh_after_mutation()
 
     def delete_library_item(self, app: dict[str, str]) -> None:
-        desktop = delete_exported_app(self.page_prefix("apps"), app)
-        file_path = app.get("file") or str(cache_file_for_path(app["path"]))
-        Path(file_path).unlink(missing_ok=True)
+        prefix = self.page_prefix("apps")
+        desktop = delete_exported_app(prefix, app)
+        for file_path in app_cache_files(prefix, app):
+            file_path.unlink(missing_ok=True)
         maybe_update_desktop_database()
-        self.set_status(f"{TEXT['removed']}: {desktop}")
+        status = f"{TEXT['removed']}: {desktop}"
+        if app.get("kind") == "shortcut":
+            status += f" ({TEXT['shortcut_still_listed']})"
+        self.set_status(status)
         self.refresh_after_mutation()
 
     def kill_process(self, proc: dict[str, str], force: bool) -> None:
