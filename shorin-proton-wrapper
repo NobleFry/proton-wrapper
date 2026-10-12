@@ -166,6 +166,7 @@ usage_en() {
   cat <<'EOF'
 Usage:
   shorin-proton-wrapper [options] app.exe [args...]
+  shorin-proton-wrapper [-p DIR] command [args...]   run a Linux program in the prefix's separate network
 
 Options:
   --init                     initialize prefix, default ~/.proton
@@ -212,6 +213,7 @@ usage_zh() {
   cat <<'EOF'
 用法:
   shorin-proton-wrapper [选项] app.exe [参数...]
+  shorin-proton-wrapper [-p 目录] 命令 [参数...]     在前置环境的独立网络里运行 Linux 程序
 
 选项:
   --init                     初始化，默认路径 ~/.proton
@@ -277,6 +279,9 @@ Sessions:
   runner, display (X11, Wayland or Gamescope) and network. With --netns on
   the session gets its own network namespace, so the TUN adapter a game
   accelerator creates there carries the programs of that prefix only.
+  A Linux program (a command, not a Windows program) given instead of an
+  exe runs in that namespace as the user, e.g. "shorin-proton-wrapper steam";
+  with --netns off it just runs.
 
 Runner discovery:
   shorin-proton-wrapper --list-runner
@@ -337,6 +342,8 @@ usage_full_zh() {
   同一个前置环境里同时运行的程序共用一个 Wine 会话。前置环境里已有程序在运行时，
   新程序会直接加入，并沿用会话的运行器、显示方式（X11、Wayland 或 Gamescope）和网络。
   开启 --netns 后会话有独立的网络命名空间，加速器在里面建立的虚拟网卡只接管这个前置环境里的程序。
+  把 exe 换成 Linux 程序（命令），它会以当前用户在这个命名空间里运行，例如 shorin-proton-wrapper steam；
+  没开 --netns 时直接运行。
 
 运行器发现:
   shorin-proton-wrapper --list-runner
@@ -2079,6 +2086,8 @@ session_message() {
       to_wayland) printf '这个前置环境的程序以 Wayland 运行，这个程序也一样。\n' ;;
       to_x11) printf '这个前置环境的程序以 X11 运行，这次不使用 Wayland。\n' ;;
       no_wayland) printf '当前不是 Wayland 桌面，这次以 X11 运行。\n' ;;
+      other_session) printf '这里是另一个前置环境的独立网络，不能从这里启动 %s 的程序。\n' "$arg" ;;
+      no_launch) printf '这个独立网络会话是旧版本的 wrapper 启动的，里面的 Linux 程序不能启动 Windows 程序。请关闭这个前置环境的程序后再试。\n' ;;
     esac
   else
     case "$key" in
@@ -2095,6 +2104,8 @@ session_message() {
       to_wayland) printf 'Programs of this prefix run on Wayland; so does this one.\n' ;;
       to_x11) printf 'Programs of this prefix run on X11; this time without Wayland.\n' ;;
       no_wayland) printf 'This is not a Wayland desktop; running on X11 this time.\n' ;;
+      other_session) printf "This is another prefix's separate network; programs of %s cannot be started from here.\n" "$arg" ;;
+      no_launch) printf 'This separate network session was started by an older version of the wrapper; its Linux programs cannot start Windows programs. Close the programs of this prefix and try again.\n' ;;
     esac
   fi
 }
@@ -2180,6 +2191,33 @@ prefix_session_active() {
   prefix_wineserver_pid > /dev/null || session_keeper_pid "$(session_dir)" > /dev/null
 }
 
+# The session whose network namespace the wrapper itself runs in, if any: a
+# program of the session started it, Steam running there say.
+session_here() {
+  local file
+  [[ -n "$HOST_NETNS" ]] || return 1
+  for file in "$SESSION_ROOT"/*/netns; do
+    if [[ -r "$file" && "$(cat "$file")" == "$HOST_NETNS" ]]; then
+      dirname "$file"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Whether the wrapper runs in the session's user namespace, as the session's
+# Windows programs do, rather than in the one of a Linux program of the
+# session (see run_linux_target), from which it cannot enter the session.
+session_userns_here() {
+  local dir="$1"
+  if [[ -r "$dir/userns" ]]; then
+    [[ "$(cat "$dir/userns")" == "$(readlink /proc/self/ns/user 2> /dev/null)" ]]
+  else
+    # a keeper of an older version: only its user namespace can look at it
+    session_keeper_pid "$dir" > /dev/null
+  fi
+}
+
 session_lock() {
   local dir
   dir="$(session_dir)"
@@ -2230,19 +2268,18 @@ session_start() {
   local dir="$1" log mac i
   command -v pasta > /dev/null 2>&1 || die_visible "$(session_message no_pasta)"
   command -v nsenter > /dev/null 2>&1 || die_visible "$(session_message no_nsenter)"
-  rm -f "$dir/keeper.pid" "$dir/netns" "$dir/bus"
+  rm -f "$dir/keeper.pid" "$dir/netns" "$dir/userns" "$dir/bus" "$dir/launch"
   log="$WRAPPER_CACHE_DIR/logs/session-$(basename "$dir").log"
   mkdir -p "$(dirname "$log")"
   mac="$(namespace_mac_address)"
   printf -- '--- %s %s\n' "$(date '+%F %T')" "$PREFIX" >> "$log"
-  # Games reach the Steam client on 127.0.0.1:57343, the namespace's own
-  # loopback; pasta forwards automatically only the host's ports outside the
-  # ephemeral range, which 57343 is in, so that one is named too. A game Steam
-  # starts brings Steam's overlay in LD_PRELOAD, which the namespace's own
-  # programs must not get.
+  # pasta forwards automatically only the host's ports outside the ephemeral
+  # range; the Steam client's 57343, in it, the keeper forwards itself while
+  # the host's Steam runs. A game Steam starts brings Steam's overlay in
+  # LD_PRELOAD, which the namespace's own programs must not get.
   setsid env -u SHORIN_PROTON_WRAPPER_APP_ID -u SHORIN_PROTON_WRAPPER_APP_PATH -u SHORIN_PROTON_WRAPPER_LOG -u LD_PRELOAD \
     SHORIN_PROTON_WRAPPER_PREFIX="$PREFIX" \
-    pasta --config-net --ns-mac-addr "$mac" -T auto -T 57343 -f --no-pidns -- "$SELF_PATH" --session-keeper "$dir" \
+    pasta --config-net --ns-mac-addr "$mac" -T auto -f --no-pidns -- "$SELF_PATH" --session-keeper "$dir" \
     >> "$log" 2>&1 < /dev/null {SESSION_LOCK_FD}>&- &
   for ((i = 0; i < 75; i++)); do
     if SESSION_KEEPER_PID="$(session_keeper_pid "$dir")"; then
@@ -2331,11 +2368,16 @@ session_adopt_display() {
 # is none: PROTON_VERB, JOIN_PREFIX and SESSION_ENV for build_launch_command.
 # It may switch the runner, Gamescope and Wayland to match the running session.
 session_prepare() {
-  local dir ws ws_netns keeper overrides item want_netns=0
+  local dir ws ws_netns keeper overrides item want_netns=0 inside=0
   dir="$(session_dir)"
   [[ -n "$SESSION_LOCK_FD" ]] || session_lock
   if prefix_netns_enabled; then
     want_netns=1
+  fi
+  # started from inside the session's namespace, by its keeper for a Linux
+  # program of the session (delegate_to_keeper)
+  if [[ "$(session_here || true)" == "$dir" ]]; then
+    inside=1
   fi
   JOIN_PREFIX=()
   SESSION_ENV=()
@@ -2353,7 +2395,7 @@ session_prepare() {
   if [[ -n "$ws" ]]; then
     SESSION_ACTIVE=1
     ws_netns="$(pid_netns "$ws")"
-    if [[ "$ws_netns" == "$HOST_NETNS" ]]; then
+    if [[ $inside -eq 0 && "$ws_netns" == "$HOST_NETNS" ]]; then
       if [[ $want_netns -eq 1 ]]; then
         die_visible "$(session_message netns_busy)"
       fi
@@ -2370,13 +2412,16 @@ session_prepare() {
     SESSION_ENV+=("PROTONFIXES_RUN_VERB=1")
     SESSION_SETTLE=""
   elif [[ -z "$keeper" && $want_netns -eq 1 ]]; then
+    [[ $inside -eq 0 ]] || die_visible "$(session_message netns_orphan)"
     session_start "$dir"
     keeper="$SESSION_KEEPER_PID"
   fi
 
   if [[ -n "$keeper" ]]; then
     SESSION_NETNS="$(pid_netns "$keeper")"
-    JOIN_PREFIX=(nsenter -t "$keeper" -U -n --preserve-credentials --)
+    if [[ $inside -eq 0 ]]; then
+      JOIN_PREFIX=(nsenter -t "$keeper" -U -n --preserve-credentials --)
+    fi
     if [[ -n "$ws" ]]; then
       SESSION_SETTLE="joined"
     fi
@@ -2868,15 +2913,102 @@ take_steam_command() {
   return 1
 }
 
+# Whether the target is a Linux program: a command on PATH or an executable
+# file that is not a Windows one. Sets TARGET to its path.
+linux_target() {
+  local path
+  if [[ "$TARGET" == */* || "$TARGET" == "~"* ]]; then
+    path="$(expand_path "$TARGET")"
+  elif ! path="$(type -P -- "$TARGET")"; then
+    path="$PWD/$TARGET"
+  fi
+  [[ -f "$path" && -x "$path" ]] || return 1
+  [[ "$(head -c 2 -- "$path" 2> /dev/null)" != "MZ" ]] || return 1
+  TARGET="$path"
+}
+
+# A Linux program runs in the prefix's network namespace when the prefix has
+# one, so that an accelerator there carries it too; Steam's %command% for a
+# Linux game is one. pasta makes the user root in the namespace, which
+# programs like Steam refuse, so the program gets a user namespace of its own
+# that maps the user back. A Windows program it starts through the wrapper
+# then cannot enter the session itself and is started by the session's keeper
+# (delegate_to_keeper).
+run_linux_target() {
+  local dir here keeper
+  dir="$(session_dir)"
+  if here="$(session_here)"; then
+    [[ "$here" == "$dir" ]] || die_visible "$(session_message other_session "$PREFIX")"
+    exec "$TARGET" "${TARGET_ARGS[@]}"
+  fi
+  if ! prefix_netns_enabled; then
+    printf 'Session: %s has no separate network, the program runs directly\n' "$PREFIX" >&2
+    exec "$TARGET" "${TARGET_ARGS[@]}"
+  fi
+  command -v unshare > /dev/null 2>&1 || die_visible "$(session_message no_nsenter)"
+  session_lock
+  if ! keeper="$(session_keeper_pid "$dir")"; then
+    session_start "$dir" >&2
+    keeper="$SESSION_KEEPER_PID"
+  fi
+  printf 'Session: network namespace of keeper %s\n' "$keeper" >&2
+  # the session lock is held until the program is inside the namespace
+  exec nsenter -t "$keeper" -U -n --preserve-credentials -- \
+    unshare -U --map-user="$(id -u)" --map-group="$(id -g)" -- \
+    bash -c 'flock -u "$1"; eval "exec $1>&-"; shift; exec "$@"' bash "$SESSION_LOCK_FD" \
+    "$TARGET" "${TARGET_ARGS[@]}"
+}
+
+# Run this wrapper again in the session's user namespace, started by the
+# session's keeper (launch_serve there) on our standard input, output and
+# error, and exit with its status. Ending this process stops it.
+delegate_to_keeper() {
+  local socket="$1/launch" script
+  [[ -S "$socket" ]] || die_visible "$(session_message no_launch)"
+  printf 'Session: started by the keeper of the session this runs in\n' >&2
+  script="$(cat <<'PY'
+import array
+import json
+import os
+import signal
+import socket
+import sys
+
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+conn.connect(sys.argv[1])
+data = json.dumps({"argv": sys.argv[2:], "env": dict(os.environ), "cwd": os.getcwd()}).encode()
+conn.sendmsg([len(data).to_bytes(4, "big")],
+             [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [0, 1, 2]))])
+conn.sendall(data)
+reply = b""
+while len(reply) < 4:
+    chunk = conn.recv(4 - len(reply))
+    if not chunk:
+        sys.exit(1)
+    reply += chunk
+sys.exit(int.from_bytes(reply, "big", signed=True) & 0xff)
+PY
+)"
+  exec python3 -c "$script" "$socket" "$SELF_PATH" "${ORIGINAL_ARGS[@]}"
+}
+
 run_target() {
-  local workdir exe proton_exe status steam_dir
+  local workdir exe proton_exe status steam_dir here
   case "${TARGET,,}" in
     *.exe|*.lnk|*.msi|*.bat|*.cmd|*.com) ;;
     *)
       steam_dir="$PWD"
-      take_steam_command || true
+      if ! take_steam_command && linux_target; then
+        run_linux_target
+      fi
       ;;
   esac
+  # a Linux program of the session started this one
+  if here="$(session_here)"; then
+    [[ "$here" == "$(session_dir)" ]] || die_visible "$(session_message other_session "$PREFIX")"
+    session_userns_here "$here" || delegate_to_keeper "$here"
+  fi
   TARGET="$(expand_path "$TARGET")"
   [[ -e "$TARGET" ]] || die_visible "target not found: $TARGET"
   apply_cached_association "$TARGET"
@@ -3398,10 +3530,13 @@ parse_args() {
 # --ime-watch by the latter.
 
 # The keeper of a network namespace session. It routes name servers around an
-# accelerator's tunnel, bridges the session bus, and exits once the last other
-# process has left the namespace, which ends pasta and the namespace with it.
+# accelerator's tunnel, bridges the session bus, passes games' connections to
+# the host's Steam client, starts Windows programs for Linux programs of the
+# session, and exits once the last other process has left the namespace, which
+# ends pasta and the namespace with it.
 session_keeper_main() {
   exec python3 - "$1" <<'PY'
+import array
 import fcntl
 import ipaddress
 import json
@@ -3409,6 +3544,7 @@ import os
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -3418,6 +3554,7 @@ import urllib.parse
 session = sys.argv[1]
 me = os.getpid()
 netns = os.readlink("/proc/self/ns/net")
+userns = os.readlink("/proc/self/ns/user")
 
 
 def log(*args):
@@ -3600,6 +3737,181 @@ def start_bus_bridge():
     threading.Thread(target=accept, daemon=True).start()
 
 
+# Games reach the Steam client on 127.0.0.1:57343, here the namespace's own
+# loopback. While Steam runs on the host, a listener here passes their
+# connections on to it through the gateway address, which pasta takes to the
+# host's loopback. It holds the port only meanwhile: a Steam started in the
+# namespace, once the host's is gone, takes it itself.
+STEAM_PORT = 57343
+
+
+def default_gateway():
+    try:
+        routes = json.loads(subprocess.run(["ip", "-j", "-4", "route", "show", "default"],
+                                           capture_output=True, text=True).stdout or "[]")
+    except (OSError, ValueError):
+        return None
+    return next((route["gateway"] for route in routes if route.get("gateway")), None)
+
+
+def host_steam_listening():
+    """Whether the host's Steam client takes connections; pasta (our parent)
+    and init run in the host's namespace and show its sockets."""
+    local = f"0100007F:{STEAM_PORT:04X}"
+    for pid in (os.getppid(), 1):
+        try:
+            with open(f"/proc/{pid}/net/tcp") as file:
+                next(file)
+                return any(fields[1] == local and fields[3] == "0A"
+                           for fields in (line.split() for line in file))
+        except (OSError, StopIteration, IndexError):
+            continue
+    return False
+
+
+class SteamForward:
+    def __init__(self):
+        self.gateway = default_gateway()
+        self.listener = None
+
+    def update(self):
+        if not self.gateway:
+            return
+        wanted = host_steam_listening()
+        if wanted and not self.listener:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                listener.bind(("127.0.0.1", STEAM_PORT))
+                listener.listen(64)
+            except OSError:
+                listener.close()  # a Steam in the namespace has it
+                return
+            self.listener = listener
+            threading.Thread(target=self.accept, args=(listener,), daemon=True).start()
+            log(f"passing port {STEAM_PORT} on to the host's Steam")
+        elif not wanted and self.listener:
+            try:
+                self.listener.shutdown(socket.SHUT_RDWR)  # wakes accept()
+            except OSError:
+                pass
+            self.listener.close()
+            self.listener = None
+            log(f"port {STEAM_PORT} let go, the host's Steam is gone")
+
+    def accept(self, listener):
+        while True:
+            try:
+                client, _ = listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.serve, args=(client,), daemon=True).start()
+
+    def serve(self, client):
+        try:
+            upstream = socket.create_connection((self.gateway, STEAM_PORT), timeout=5)
+            upstream.settimeout(None)
+        except OSError:
+            client.close()
+            return
+        threading.Thread(target=bus_copy, args=(client, upstream), daemon=True).start()
+        try:
+            while data := upstream.recv(65536):
+                client.sendall(data)
+        except OSError:
+            pass
+        # reset the connection rather than close it first: that would leave the
+        # port in TIME_WAIT for a minute, keeping a Steam started here from it
+        try:
+            client.shutdown(socket.SHUT_RD)  # wakes the other direction
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        except OSError:
+            pass
+        client.close()
+        upstream.close()
+
+
+# A Linux program of the session runs as the user in a user namespace of its
+# own (pasta makes the user root here, which programs like Steam refuse), and
+# from there cannot enter the session's. The wrapper it starts for a Windows
+# program, a game Steam starts say, asks here instead: the keeper starts the
+# wrapper with the request's command line, environment and folder, on the
+# caller's standard input, output and error, answers with its exit status,
+# and stops it if the caller goes away first.
+def launch_serve(conn):
+    fds = array.array("i")
+    try:
+        size, ancdata, _, _ = conn.recvmsg(4, socket.CMSG_LEN(3 * fds.itemsize))
+        for level, kind, data in ancdata:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                fds.frombytes(data[:len(data) - len(data) % fds.itemsize])
+        if len(size) != 4 or len(fds) != 3:
+            return
+        size = int.from_bytes(size, "big")
+        data = bytearray()
+        while len(data) < size:
+            chunk = conn.recv(size - len(data))
+            if not chunk:
+                return
+            data += chunk
+        request = json.loads(data)
+        child = subprocess.Popen(request["argv"], env=request["env"], cwd=request["cwd"],
+                                 stdin=fds[0], stdout=fds[1], stderr=fds[2], start_new_session=True)
+        for fd in fds:
+            os.close(fd)
+        del fds[:]
+        log("started for a program of the session:", " ".join(request["argv"][1:])[:300])
+
+        def stop_if_caller_gone():
+            try:
+                conn.recv(1)
+            except OSError:
+                pass
+            if child.poll() is None:
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                except OSError:
+                    pass
+
+        threading.Thread(target=stop_if_caller_gone, daemon=True).start()
+        status = child.wait()
+        try:
+            conn.sendall((status if status >= 0 else 128 - status).to_bytes(4, "big", signed=True))
+        except OSError:
+            pass  # the caller is gone, which stopped the program
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        log("launch request failed:", error)
+    finally:
+        for fd in fds:
+            os.close(fd)
+        try:
+            conn.shutdown(socket.SHUT_RDWR)  # wakes stop_if_caller_gone
+        except OSError:
+            pass
+        conn.close()
+
+
+def start_launch_server():
+    path = os.path.join(session, "launch")
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(16)
+
+    def accept():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            threading.Thread(target=launch_serve, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+
+
 def others():
     """Processes in the namespace other than the keeper."""
     count = 0
@@ -3615,7 +3927,14 @@ def others():
 
 
 def cleanup():
-    for name in ("keeper.pid", "netns", "bus"):
+    # only our own: a keeper that never became the session's leaves its files
+    try:
+        with open(os.path.join(session, "keeper.pid")) as file:
+            if file.read().strip() not in ("", str(me)):
+                return
+    except OSError:
+        pass
+    for name in ("keeper.pid", "netns", "userns", "bus", "launch"):
         try:
             os.unlink(os.path.join(session, name))
         except FileNotFoundError:
@@ -3632,8 +3951,12 @@ for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(sig, stop)
 pin_name_server_routes()
 start_bus_bridge()
-with open(os.path.join(session, "netns"), "w") as file:
-    file.write(netns)
+start_launch_server()
+steam_forward = SteamForward()
+steam_forward.update()
+for name, value in (("netns", netns), ("userns", userns)):
+    with open(os.path.join(session, name), "w") as file:
+        file.write(value)
 with open(os.path.join(session, "keeper.pid.tmp"), "w") as file:
     file.write(str(me))
 os.rename(os.path.join(session, "keeper.pid.tmp"), os.path.join(session, "keeper.pid"))
@@ -3647,6 +3970,7 @@ seen = False
 started = time.monotonic()
 while True:
     time.sleep(1)
+    steam_forward.update()
     if others():
         seen = True
         continue

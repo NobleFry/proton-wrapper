@@ -53,6 +53,17 @@ Proton 会放进它要求的 Steam Linux Runtime 容器里运行（WE-Proton、D
 - 需要安装 `passt`（提供 `pasta`），运行器用 WE-Proton；
 - 游戏要和加速器在同一个前置环境里；
 
+Linux 程序也可以放进这个独立网络，让加速器接管它的流量：把 exe 换成 Linux 程序即可，例如
+
+```
+shorin-proton-wrapper steam
+shorin-proton-wrapper -p 前置环境 curl https://store.steampowered.com
+```
+
+- 它以当前用户的身份运行（独立网络里其他程序看到的是 root，Steam 这类程序不肯以 root 运行）；前置环境没开独立网络时直接运行；
+- 用这种方式启动的 Steam 整个在独立网络里，要先退出已经开着的 Steam（Steam 只能开一个）。它启动的 Windows 游戏照样用 `shorin-proton-wrapper %command%`，会加入同一个前置环境的会话；
+- 加速器自己决定接管哪些连接。例如网易 UU 的 Steam 加速只放行商店和社区的域名，在海外使用时，和它们共用 IP 的商店图片、脚本会被断开，商店页面加载不出来。
+
 ## Steam 游戏
 
 在 Steam 里把游戏的启动选项设为：
@@ -61,7 +72,7 @@ Proton 会放进它要求的 Steam Linux Runtime 容器里运行（WE-Proton、D
 shorin-proton-wrapper %command%
 ```
 
-游戏就不再用 Steam 给它建的前置环境，而是作为 `~/.proton` 里的程序运行（另一个前置环境用 `shorin-proton-wrapper -p 前置环境 %command%`）：和那里的其他程序共用一个会话、运行器和独立网络，比如让加速器接管 Steam 游戏。
+游戏就不再用 Steam 给它建的前置环境，而是作为 `~/.proton` 里的程序运行（另一个前置环境用 `shorin-proton-wrapper -p 前置环境 %command%`）：和那里的其他程序共用一个会话、运行器和独立网络，比如让加速器接管 Steam 游戏。Linux 原生游戏用同样的启动选项，会在这个前置环境的独立网络里运行。
 
 - 游戏的`兼容性`里仍要选一个 Proton（建议 WE-Proton Latest），否则 Steam 不会启动 Windows 游戏；实际运行用的是前置环境的运行器。wrapper 装的 Latest 运行器在 Steam 里的名字是固定的（版本号显示在括号里），更新之后这个选择不会丢；
 - 存在 Windows 用户目录（AppData、文档）里的存档会在 `~/.proton` 里。Steam 云存档同步的是 Steam 自己的前置环境（`steamapps/compatdata/<AppID>`）；
@@ -90,6 +101,7 @@ shorin-proton-wrapper
 
 用法:
   shorin-proton-wrapper [选项] app.exe [参数...]
+  shorin-proton-wrapper [-p 目录] 命令 [参数...]     在前置环境的独立网络里运行 Linux 程序
 
 选项:
   --init                     初始化，默认路径 ~/.proton
