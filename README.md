@@ -2,8 +2,6 @@
 
 一直以来，用 Proton 运行 exe 大多通过添加非 Steam 游戏或者Lutris之类的方式，难以做到`双击直接运行`般无缝的交互体验，所以我制作了 `shorin-proton-wrapper`。最大的特点是安装后可以直接运行 exe，无须任何前置操作。
 
-Arch Linux 可以从AUR安装。
-
 >注意，这只是个包装器，原本 Proton 运行不了的软件依旧会运行不了。
 
 ![](./pics/1.png)
@@ -21,6 +19,35 @@ Proton 会放进它要求的 Steam Linux Runtime 容器里运行（WE-Proton、D
 32 位程序默认用 Wine 的新 WoW64 模式运行（`PROTON_USE_WOW64=1`），不需要安装 32 位系统库。个别 32 位程序有问题时，可以在它的配置里把环境变量设成 `PROTON_USE_WOW64=0`。
 
 可调环境变量：`SHORIN_PROTON_WRAPPER_DOWNLOAD_STALL`（卡死判定秒数，默认 120）、`SHORIN_PROTON_WRAPPER_DOWNLOAD_TIMEOUT`（下载总时长上限秒数，默认 0 表示不限制）、`SHORIN_PROTON_WRAPPER_RUNTIME`（设为 0 时不用 Steam 运行时，直接在宿主机上运行 Proton）。
+
+## 安装
+
+依赖：`bash` `python` `python-gobject` `gtk4` `curl` `icoextract` `python-pillow`
+
+可选：`gamescope` `passt`（独立网络） `mangohud` `libnotify`（通知） `wget` `steam` `lutris` `lib32-cairo`（`PROTON_USE_WOW64=0` 时）
+
+Debian / Ubuntu / Fedora 从 [Releases](https://github.com/SHORiN-KiWATA/proton-wrapper/releases/latest) 下载安装包，依赖会一并装上：
+
+```
+sudo apt install ./shorin-proton-wrapper_*_all.deb       # Debian / Ubuntu
+sudo dnf install ./shorin-proton-wrapper-*.noarch.rpm    # Fedora
+```
+
+Arch Linux：
+
+```
+yay -S shorin-proton-wrapper-git
+```
+
+其他发行版装好依赖后：
+
+```
+git clone https://github.com/SHORiN-KiWATA/proton-wrapper
+cd proton-wrapper
+sudo install -Dm755 -t /usr/local/bin shorin-proton-wrapper shorin-proton-wrapper-configure shorin-proton-wrapper-manager
+sudo install -Dm644 -t /usr/local/share/applications *.desktop
+sudo install -Dm644 icons/shorin-proton.png /usr/local/share/icons/hicolor/512x512/apps/shorin-proton.png
+```
 
 ## 设置Windows程序运行环境
 

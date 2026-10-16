@@ -1,0 +1,39 @@
+name: shorin-proton-wrapper
+arch: all
+platform: linux
+version: ${VERSION}
+maintainer: SHORiN-KiWATA <fcl709@outlook.com>
+description: Simple Proton wrapper for running Windows executables
+homepage: https://github.com/SHORiN-KiWATA/proton-wrapper
+license: MIT
+
+contents:
+  - src: shorin-proton-wrapper
+    dst: /usr/bin/shorin-proton-wrapper
+    file_info: { mode: 0755 }
+  - src: shorin-proton-wrapper-configure
+    dst: /usr/bin/shorin-proton-wrapper-configure
+    file_info: { mode: 0755 }
+  - src: shorin-proton-wrapper-manager
+    dst: /usr/bin/shorin-proton-wrapper-manager
+    file_info: { mode: 0755 }
+  - src: shorin-proton-wrapper-run-windows-program.desktop
+    dst: /usr/share/applications/shorin-proton-wrapper-run-windows-program.desktop
+    file_info: { mode: 0644 }
+  - src: shorin-proton-wrapper-windows-program-configure.desktop
+    dst: /usr/share/applications/shorin-proton-wrapper-windows-program-configure.desktop
+    file_info: { mode: 0644 }
+  - src: shorin-proton-wrapper-manager.desktop
+    dst: /usr/share/applications/shorin-proton-wrapper-manager.desktop
+    file_info: { mode: 0644 }
+  - src: icons/shorin-proton.png
+    dst: /usr/share/icons/hicolor/512x512/apps/shorin-proton.png
+    file_info: { mode: 0644 }
+
+overrides:
+  deb:
+    depends: [bash, python3, python3-gi, gir1.2-gtk-4.0, curl, python3-pil]
+    recommends: [gamescope, icoextract, passt, mangohud, libnotify-bin, wget]
+  rpm:
+    depends: [bash, python3, python3-gobject, gobject-introspection, gtk4, curl, python3-pillow]
+    recommends: [gamescope, python3-icoextract, passt, mangohud, libnotify, wget]
